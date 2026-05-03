@@ -1,0 +1,15 @@
+/Users/ganyu/Desktop/myself/01-个人/个人/12-kubesphere/05-iot/01-traceiot/backend/src/TraceIot.Domain/bin/Debug/net8.0/TraceIot.Domain.deps.json
+/Users/ganyu/Desktop/myself/01-个人/个人/12-kubesphere/05-iot/01-traceiot/backend/src/TraceIot.Domain/bin/Debug/net8.0/TraceIot.Domain.dll
+/Users/ganyu/Desktop/myself/01-个人/个人/12-kubesphere/05-iot/01-traceiot/backend/src/TraceIot.Domain/bin/Debug/net8.0/TraceIot.Domain.pdb
+/Users/ganyu/Desktop/myself/01-个人/个人/12-kubesphere/05-iot/01-traceiot/backend/src/TraceIot.Domain/bin/Debug/net8.0/TraceIot.Domain.Shared.dll
+/Users/ganyu/Desktop/myself/01-个人/个人/12-kubesphere/05-iot/01-traceiot/backend/src/TraceIot.Domain/bin/Debug/net8.0/TraceIot.Domain.Shared.pdb
+/Users/ganyu/Desktop/myself/01-个人/个人/12-kubesphere/05-iot/01-traceiot/backend/src/TraceIot.Domain/obj/Debug/net8.0/TraceIot.Domain.csproj.AssemblyReference.cache
+/Users/ganyu/Desktop/myself/01-个人/个人/12-kubesphere/05-iot/01-traceiot/backend/src/TraceIot.Domain/obj/Debug/net8.0/TraceIot.Domain.GeneratedMSBuildEditorConfig.editorconfig
+/Users/ganyu/Desktop/myself/01-个人/个人/12-kubesphere/05-iot/01-traceiot/backend/src/TraceIot.Domain/obj/Debug/net8.0/TraceIot.Domain.AssemblyInfoInputs.cache
+/Users/ganyu/Desktop/myself/01-个人/个人/12-kubesphere/05-iot/01-traceiot/backend/src/TraceIot.Domain/obj/Debug/net8.0/TraceIot.Domain.AssemblyInfo.cs
+/Users/ganyu/Desktop/myself/01-个人/个人/12-kubesphere/05-iot/01-traceiot/backend/src/TraceIot.Domain/obj/Debug/net8.0/TraceIot.Domain.csproj.CoreCompileInputs.cache
+/Users/ganyu/Desktop/myself/01-个人/个人/12-kubesphere/05-iot/01-traceiot/backend/src/TraceIot.Domain/obj/Debug/net8.0/TraceIot.5B4CB5CE.Up2Date
+/Users/ganyu/Desktop/myself/01-个人/个人/12-kubesphere/05-iot/01-traceiot/backend/src/TraceIot.Domain/obj/Debug/net8.0/TraceIot.Domain.dll
+/Users/ganyu/Desktop/myself/01-个人/个人/12-kubesphere/05-iot/01-traceiot/backend/src/TraceIot.Domain/obj/Debug/net8.0/refint/TraceIot.Domain.dll
+/Users/ganyu/Desktop/myself/01-个人/个人/12-kubesphere/05-iot/01-traceiot/backend/src/TraceIot.Domain/obj/Debug/net8.0/TraceIot.Domain.pdb
+/Users/ganyu/Desktop/myself/01-个人/个人/12-kubesphere/05-iot/01-traceiot/backend/src/TraceIot.Domain/obj/Debug/net8.0/ref/TraceIot.Domain.dll

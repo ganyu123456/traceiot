@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Volo.Abp.Autofac" Version="8.3.4" />
+    <PackageReference Include="Volo.Abp.AspNetCore.Serilog" Version="8.3.4" />
+    <PackageReference Include="Volo.Abp.Swashbuckle" Version="8.3.4" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.11" />
+    <PackageReference Include="Serilog.AspNetCore" Version="8.0.3" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\TraceIot.HttpApi\TraceIot.HttpApi.csproj" />
+    <ProjectReference Include="..\TraceIot.Application\TraceIot.Application.csproj" />
+    <ProjectReference Include="..\TraceIot.EntityFrameworkCore\TraceIot.EntityFrameworkCore.csproj" />
+    <ProjectReference Include="..\TraceIot.MqttWorker\TraceIot.MqttWorker.csproj" />
+  </ItemGroup>
+</Project>

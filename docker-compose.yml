@@ -1,0 +1,76 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: traceiot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: traceiot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: traceiot123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docs/db-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    networks:
+      - traceiot-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: traceiot-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - traceiot-net
+
+  influxdb:
+    image: influxdb:2.7
+    container_name: traceiot-influxdb
+    restart: unless-stopped
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: admin
+      DOCKER_INFLUXDB_INIT_PASSWORD: traceiot123
+      DOCKER_INFLUXDB_INIT_ORG: traceiot
+      DOCKER_INFLUXDB_INIT_BUCKET: gps
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: traceiot-influxdb-token-2024
+    ports:
+      - "8086:8086"
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+    networks:
+      - traceiot-net
+
+  emqx:
+    image: emqx:5.8
+    container_name: traceiot-emqx
+    restart: unless-stopped
+    environment:
+      EMQX_NAME: traceiot-emqx
+      EMQX_HOST: 127.0.0.1
+    ports:
+      - "1883:1883"    # MQTT
+      - "8083:8083"    # MQTT over WebSocket
+      - "18083:18083"  # EMQX Dashboard (admin/public)
+    volumes:
+      - emqx_data:/opt/emqx/data
+      - emqx_log:/opt/emqx/log
+    networks:
+      - traceiot-net
+
+volumes:
+  postgres_data:
+  redis_data:
+  influxdb_data:
+  emqx_data:
+  emqx_log:
+
+networks:
+  traceiot-net:
+    driver: bridge
