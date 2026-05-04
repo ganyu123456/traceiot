@@ -111,8 +111,12 @@ jobs:
 
             # ── 4. 配置部署参数 ───────────────────────────────────
             COMPOSE_FILE="/opt/traceiot/docker-compose.yml"
-            export GITHUB_REPOSITORY_OWNER="$REPO_OWNER"
-            export TAG="latest"
+
+            # 写入 .env 文件，docker compose 自动读取（sudo 不继承环境变量，用 .env 最可靠）
+            cat > /opt/traceiot/.env << EOF
+GITHUB_REPOSITORY_OWNER=${REPO_OWNER}
+TAG=latest
+EOF
 
             # ── 5. 判断是首次部署还是更新 ────────────────────────
             RUNNING_COUNT=$(sudo docker ps --filter "name=traceiot" --format "{{.Names}}" 2>/dev/null | wc -l)
