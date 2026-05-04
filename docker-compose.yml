@@ -98,9 +98,6 @@ services:
 
   backend:
     image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-traceiot}/traceiot-backend:${TAG:-latest}
-    build:
-      context: .
-      dockerfile: Dockerfile
     container_name: traceiot-backend
     restart: unless-stopped
     ports:
@@ -139,9 +136,6 @@ services:
 
   frontend:
     image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-traceiot}/traceiot-frontend:${TAG:-latest}
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
     container_name: traceiot-frontend
     restart: unless-stopped
     ports:

@@ -120,12 +120,23 @@ jobs:
 
             if [ "$RUNNING_COUNT" -gt 0 ]; then
               info "检测到 ${RUNNING_COUNT} 个 traceiot 容器正在运行，执行滚动更新..."
-              $COMPOSE_CMD -f "$COMPOSE_FILE" pull
+              info "基础设施镜像已缓存，仅拉取应用镜像（backend / frontend）..."
+              $COMPOSE_CMD -f "$COMPOSE_FILE" pull backend frontend
               $COMPOSE_CMD -f "$COMPOSE_FILE" up -d --remove-orphans
               ok "滚动更新完成"
             else
-              info "首次部署，拉取镜像并启动所有服务..."
-              $COMPOSE_CMD -f "$COMPOSE_FILE" pull
+              info "首次部署，检查并拉取所有缺失镜像..."
+              # 逐个服务检查：本地已有镜像则跳过，否则拉取
+              for svc in postgres redis influxdb emqx backend frontend; do
+                IMG=$(sudo docker compose -f "$COMPOSE_FILE" config 2>/dev/null \
+                  | grep -A1 "  $svc:" | grep "image:" | awk '{print $2}' || true)
+                if [ -n "$IMG" ] && sudo docker image inspect "$IMG" &>/dev/null 2>&1; then
+                  ok "镜像已存在，跳过: $IMG"
+                else
+                  log "拉取镜像: $svc ..."
+                  $COMPOSE_CMD -f "$COMPOSE_FILE" pull "$svc"
+                fi
+              done
               $COMPOSE_CMD -f "$COMPOSE_FILE" up -d
               ok "首次部署完成"
             fi
