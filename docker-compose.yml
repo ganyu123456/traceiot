@@ -23,7 +23,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./docs/db-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      # 表结构由 EF Core Migration（MigrateAsync）在后端启动时自动创建，无需 SQL 脚本初始化
     networks:
       - traceiot-net
     healthcheck:
