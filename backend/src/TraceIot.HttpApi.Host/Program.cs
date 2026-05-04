@@ -4,6 +4,9 @@ using Serilog.Events;
 using TraceIot;
 using TraceIot.EntityFrameworkCore;
 
+// Npgsql 8.x 破坏性变更：启用旧版时间戳行为，允许 Local DateTime 写入 timestamptz
+AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Debug()
     .MinimumLevel.Override("Microsoft", LogEventLevel.Information)

@@ -32,7 +32,8 @@ public class TraceIotEntityFrameworkCoreModule : AbpModule
 
         Configure<AbpDbContextOptions>(options =>
         {
-            options.UseNpgsql<TraceIotDbContext>();
+            // 全局默认：所有 ABP 模块的 DbContext（Setting/Permission/Identity 等）都使用 PostgreSQL
+            options.UseNpgsql();
         });
     }
 }

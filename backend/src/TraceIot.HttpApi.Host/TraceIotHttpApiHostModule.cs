@@ -103,8 +103,12 @@ public class TraceIotHttpApiHostModule : AbpModule
     private void ConfigureRedis(ServiceConfigurationContext context, IConfiguration config)
     {
         var redisConfig = config["Redis:Configuration"] ?? "localhost:6379";
+        var options = ConfigurationOptions.Parse(redisConfig);
+        options.AbortOnConnectFail = false;   // 连接失败时不抛异常，后台自动重试
+        options.ConnectTimeout = 5000;
+        options.SyncTimeout = 5000;
         context.Services.AddSingleton<IConnectionMultiplexer>(
-            ConnectionMultiplexer.Connect(redisConfig));
+            ConnectionMultiplexer.Connect(options));
     }
 
     private void ConfigureInfluxDb(ServiceConfigurationContext context, IConfiguration config)
