@@ -2,8 +2,9 @@ name: Release — 多架构镜像构建与发布
 
 on:
   push:
+    branches: [main, develop]   # 每次推送代码自动构建 latest 镜像
     tags:
-      - 'v*.*.*'   # 匹配 v1.0.0, v1.2.3 等语义化版本标签
+      - 'v*.*.*'                 # 打 tag 时额外创建 GitHub Release
   workflow_dispatch:
     inputs:
       tag:
@@ -48,8 +49,10 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           else
-            echo "tag=${{ github.ref_name }}"         >> $GITHUB_OUTPUT
+            echo "tag=latest" >> $GITHUB_OUTPUT
           fi
 
       - name: 配置 QEMU（支持跨架构模拟）
@@ -133,8 +136,10 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           else
-            echo "tag=${{ github.ref_name }}"         >> $GITHUB_OUTPUT
+            echo "tag=latest" >> $GITHUB_OUTPUT
           fi
 
       - name: 配置 QEMU
@@ -205,8 +210,10 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           else
-            echo "tag=${{ github.ref_name }}"         >> $GITHUB_OUTPUT
+            echo "tag=latest" >> $GITHUB_OUTPUT
           fi
 
       - name: 配置 Docker Buildx
@@ -223,22 +230,36 @@ jobs:
       - name: 合并后端多架构 Manifest
         run: |
           TAG="${{ steps.version.outputs.tag }}"
-          docker buildx imagetools create \
-            --tag ${{ env.BACKEND_IMAGE }}:${TAG} \
-            --tag ${{ env.BACKEND_IMAGE }}:latest \
-            ${{ env.BACKEND_IMAGE }}:${TAG}-amd64 \
-            ${{ env.BACKEND_IMAGE }}:${TAG}-arm64
+          if [ "$TAG" = "latest" ]; then
+            docker buildx imagetools create \
+              --tag ${{ env.BACKEND_IMAGE }}:latest \
+              ${{ env.BACKEND_IMAGE }}:latest-amd64 \
+              ${{ env.BACKEND_IMAGE }}:latest-arm64
+          else
+            docker buildx imagetools create \
+              --tag ${{ env.BACKEND_IMAGE }}:${TAG} \
+              --tag ${{ env.BACKEND_IMAGE }}:latest \
+              ${{ env.BACKEND_IMAGE }}:${TAG}-amd64 \
+              ${{ env.BACKEND_IMAGE }}:${TAG}-arm64
+          fi
           echo "后端多架构 Manifest 已推送："
           docker buildx imagetools inspect ${{ env.BACKEND_IMAGE }}:${TAG}
 
       - name: 合并前端多架构 Manifest
         run: |
           TAG="${{ steps.version.outputs.tag }}"
-          docker buildx imagetools create \
-            --tag ${{ env.FRONTEND_IMAGE }}:${TAG} \
-            --tag ${{ env.FRONTEND_IMAGE }}:latest \
-            ${{ env.FRONTEND_IMAGE }}:${TAG}-amd64 \
-            ${{ env.FRONTEND_IMAGE }}:${TAG}-arm64
+          if [ "$TAG" = "latest" ]; then
+            docker buildx imagetools create \
+              --tag ${{ env.FRONTEND_IMAGE }}:latest \
+              ${{ env.FRONTEND_IMAGE }}:latest-amd64 \
+              ${{ env.FRONTEND_IMAGE }}:latest-arm64
+          else
+            docker buildx imagetools create \
+              --tag ${{ env.FRONTEND_IMAGE }}:${TAG} \
+              --tag ${{ env.FRONTEND_IMAGE }}:latest \
+              ${{ env.FRONTEND_IMAGE }}:${TAG}-amd64 \
+              ${{ env.FRONTEND_IMAGE }}:${TAG}-arm64
+          fi
           echo "前端多架构 Manifest 已推送："
           docker buildx imagetools inspect ${{ env.FRONTEND_IMAGE }}:${TAG}
 
@@ -249,6 +270,8 @@ jobs:
     name: 创建 GitHub Release
     runs-on: ubuntu-latest
     needs: [merge-manifests]
+    # 仅在打 tag（v*.*.*）或手动触发时创建 Release，分支 push 跳过
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     permissions:
       contents: write   # 创建 GitHub Release 必须
       packages: read
