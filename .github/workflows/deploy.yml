@@ -26,6 +26,17 @@ jobs:
       - name: Checkout（获取 docker-compose.yml）
         uses: actions/checkout@v4
 
+      # ── 预先创建目标目录并赋权（SCP 不支持 sudo，需提前建好）──
+      - name: 创建部署目录
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          script: |
+            sudo mkdir -p /opt/traceiot
+            sudo chown -R $USER:$USER /opt/traceiot
+
       # ── 上传最新 docker-compose.yml 到服务器 ──────────────────
       - name: 上传 docker-compose.yml 到服务器
         uses: appleboy/scp-action@v0.1.7
