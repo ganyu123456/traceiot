@@ -266,10 +266,29 @@ jobs:
             echo "tag=${{ github.ref_name }}"         >> $GITHUB_OUTPUT
           fi
 
-      # 下载所有架构的离线镜像包
-      - name: 下载所有 Artifact
+      # 下载所有架构的离线镜像包（明确指定 pattern，避免下载 Docker GHA 构建缓存）
+      - name: 下载后端 amd64 Artifact
         uses: actions/download-artifact@v4
         with:
+          name: backend-amd64
+          path: artifacts/
+
+      - name: 下载后端 arm64 Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-arm64
+          path: artifacts/
+
+      - name: 下载前端 amd64 Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-amd64
+          path: artifacts/
+
+      - name: 下载前端 arm64 Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-arm64
           path: artifacts/
 
       - name: 整理文件
