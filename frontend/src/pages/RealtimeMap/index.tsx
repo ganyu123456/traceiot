@@ -9,7 +9,7 @@ import dayjs from 'dayjs'
 const { Title } = Typography
 
 // 高德地图 Key（请替换为你自己的 Key）
-const AMAP_KEY = 'your-amap-key-here'
+const AMAP_KEY = '35676052942c09da714f53640f0eedcb'
 
 declare global {
   interface Window {

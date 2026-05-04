@@ -12,7 +12,7 @@ const { Title } = Typography
 const { RangePicker } = DatePicker
 
 // 高德地图 Key（与 RealtimeMap 保持一致）
-const AMAP_KEY = 'your-amap-key-here'
+const AMAP_KEY = '35676052942c09da714f53640f0eedcb'
 
 function loadAMap(): Promise<void> {
   return new Promise((resolve, reject) => {

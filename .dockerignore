@@ -1,0 +1,12 @@
+# 根目录 .dockerignore（后端镜像构建时使用）
+**/bin/
+**/obj/
+**/.git/
+**/.github/
+**/node_modules/
+frontend/
+simulator/
+docs/
+*.md
+.env*
+docker-compose*.yml

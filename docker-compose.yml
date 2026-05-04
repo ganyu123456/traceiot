@@ -1,6 +1,16 @@
 version: '3.8'
 
+# ============================================================
+# TraceIoT — 一键部署配置
+# 使用方式：
+#   在线部署：docker compose up -d
+#   指定版本：TAG=v1.0.0 docker compose up -d
+#   本地构建：docker compose up -d --build
+# ============================================================
+
 services:
+  # ── 基础设施 ─────────────────────────────────────────────
+
   postgres:
     image: postgres:16
     container_name: traceiot-postgres
@@ -16,6 +26,11 @@ services:
       - ./docs/db-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
     networks:
       - traceiot-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d traceiot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
@@ -28,6 +43,11 @@ services:
       - redis_data:/data
     networks:
       - traceiot-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   influxdb:
     image: influxdb:2.7
@@ -46,6 +66,11 @@ services:
       - influxdb_data:/var/lib/influxdb2
     networks:
       - traceiot-net
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
   emqx:
     image: emqx:5.8
@@ -57,10 +82,79 @@ services:
     ports:
       - "1883:1883"    # MQTT
       - "8083:8083"    # MQTT over WebSocket
-      - "18083:18083"  # EMQX Dashboard (admin/public)
+      - "18083:18083"  # EMQX Dashboard (默认账号: admin/public)
     volumes:
       - emqx_data:/opt/emqx/data
       - emqx_log:/opt/emqx/log
+    networks:
+      - traceiot-net
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ── 应用服务 ──────────────────────────────────────────────
+
+  backend:
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-traceiot}/traceiot-backend:${TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: traceiot-backend
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      # 数据库连接（指向容器服务名）
+      - ConnectionStrings__Default=Host=traceiot-postgres;Port=5432;Database=traceiot;Username=postgres;Password=traceiot123
+      # Redis
+      - Redis__Configuration=traceiot-redis:6379
+      # InfluxDB
+      - InfluxDB__Url=http://traceiot-influxdb:8086
+      - InfluxDB__Token=traceiot-influxdb-token-2024
+      - InfluxDB__Org=traceiot
+      - InfluxDB__Bucket=gps
+      # MQTT（连接 EMQX 容器）
+      - Mqtt__Host=traceiot-emqx
+      - Mqtt__Port=1883
+      # JWT（生产环境请修改此密钥）
+      - Jwt__Key=TraceIot-JWT-Secret-Key-2024-Must-Be-At-Least-32-Chars!
+      - Jwt__Issuer=TraceIot
+      - Jwt__Audience=TraceIotFrontend
+      # CORS（允许前端容器访问）
+      - App__CorsOrigins=http://localhost,http://localhost:80,http://traceiot-frontend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+      emqx:
+        condition: service_healthy
+    networks:
+      - traceiot-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  frontend:
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-traceiot}/traceiot-frontend:${TAG:-latest}
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: traceiot-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
     networks:
       - traceiot-net
 

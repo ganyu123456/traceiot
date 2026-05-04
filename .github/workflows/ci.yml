@@ -1,0 +1,76 @@
+name: CI — 编译检查
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ──────────────────────────────────────────────────────────
+  # Job 1: 后端编译检查（.NET 8）
+  # ──────────────────────────────────────────────────────────
+  build-backend:
+    name: 后端编译 (.NET 8)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 配置 .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: NuGet 缓存
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ hashFiles('backend/**/*.csproj') }}
+          restore-keys: nuget-
+
+      - name: 还原 NuGet 依赖
+        run: dotnet restore backend/TraceIot.sln
+
+      - name: 编译（Release 模式）
+        run: dotnet build backend/TraceIot.sln -c Release --no-restore
+
+  # ──────────────────────────────────────────────────────────
+  # Job 2: 前端编译检查（Node 20 + TypeScript）
+  # ──────────────────────────────────────────────────────────
+  build-frontend:
+    name: 前端编译 (Node 20)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 配置 Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: TypeScript 类型检查
+        run: npx tsc --noEmit
+
+      - name: 构建生产包
+        run: npm run build
