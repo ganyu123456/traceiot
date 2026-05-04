@@ -11,12 +11,13 @@ import dayjs from 'dayjs'
 const { Title } = Typography
 const { RangePicker } = DatePicker
 
-// 高德地图 Key（与 RealtimeMap 保持一致）
-const AMAP_KEY = '35676052942c09da714f53640f0eedcb'
+const AMAP_KEY           = '57a5e349af4ba24b6e204e299d91c332'
+const AMAP_SECURITY_CODE = 'f8361b07700c70840d85b27ea0bbe6d5'
 
 function loadAMap(): Promise<void> {
   return new Promise((resolve, reject) => {
     if (window.AMap) { resolve(); return }
+    window._AMapSecurityConfig = { securityJsCode: AMAP_SECURITY_CODE }
     const script = document.createElement('script')
     script.src = `https://webapi.amap.com/maps?v=2.0&key=${AMAP_KEY}`
     script.onload  = () => resolve()

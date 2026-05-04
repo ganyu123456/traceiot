@@ -8,19 +8,21 @@ import dayjs from 'dayjs'
 
 const { Title } = Typography
 
-// 高德地图 Key（请替换为你自己的 Key）
-const AMAP_KEY = '35676052942c09da714f53640f0eedcb'
+const AMAP_KEY           = '57a5e349af4ba24b6e204e299d91c332'
+const AMAP_SECURITY_CODE = 'f8361b07700c70840d85b27ea0bbe6d5'
 
 declare global {
   interface Window {
     AMap: any
     _amapLoaded: boolean
+    _AMapSecurityConfig: { securityJsCode: string }
   }
 }
 
 function loadAMap(): Promise<void> {
   return new Promise((resolve, reject) => {
     if (window._amapLoaded && window.AMap) { resolve(); return }
+    window._AMapSecurityConfig = { securityJsCode: AMAP_SECURITY_CODE }
     const script = document.createElement('script')
     script.src = `https://webapi.amap.com/maps?v=2.0&key=${AMAP_KEY}`
     script.onload = () => { window._amapLoaded = true; resolve() }
