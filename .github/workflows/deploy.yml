@@ -59,7 +59,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
           envs: GHCR_TOKEN,GHCR_USER,REPO_OWNER
-          command_timeout: 15m
+          command_timeout: 120m
           script: |
             set -e
 
