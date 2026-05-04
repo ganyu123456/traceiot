@@ -44,9 +44,8 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
-          source: "docker-compose.yml,scripts/load-and-start.sh"
+          source: "docker-compose.yml"
           target: /opt/traceiot
-          strip_components: 1   # 去掉前缀目录，直接存到 /opt/traceiot/
 
       # ── SSH 远程执行部署脚本 ───────────────────────────────────
       - name: SSH 部署
@@ -110,11 +109,8 @@ jobs:
             echo "$GHCR_TOKEN" | sudo docker login ghcr.io -u "$GHCR_USER" --password-stdin
             ok "已登录 GHCR"
 
-            # ── 4. 进入项目目录 ──────────────────────────────────
-            sudo mkdir -p /opt/traceiot
-            cd /opt/traceiot
-
-            # 确保 docker-compose.yml 使用正确的 GHCR owner
+            # ── 4. 配置部署参数 ───────────────────────────────────
+            COMPOSE_FILE="/opt/traceiot/docker-compose.yml"
             export GITHUB_REPOSITORY_OWNER="$REPO_OWNER"
             export TAG="latest"
 
@@ -123,20 +119,20 @@ jobs:
 
             if [ "$RUNNING_COUNT" -gt 0 ]; then
               info "检测到 ${RUNNING_COUNT} 个 traceiot 容器正在运行，执行滚动更新..."
-              $COMPOSE_CMD pull
-              $COMPOSE_CMD up -d --remove-orphans
+              $COMPOSE_CMD -f "$COMPOSE_FILE" pull
+              $COMPOSE_CMD -f "$COMPOSE_FILE" up -d --remove-orphans
               ok "滚动更新完成"
             else
               info "首次部署，拉取镜像并启动所有服务..."
-              $COMPOSE_CMD pull
-              $COMPOSE_CMD up -d
+              $COMPOSE_CMD -f "$COMPOSE_FILE" pull
+              $COMPOSE_CMD -f "$COMPOSE_FILE" up -d
               ok "首次部署完成"
             fi
 
             # ── 6. 等待并输出状态 ────────────────────────────────
             log "等待服务就绪 (20s)..."
             sleep 20
-            $COMPOSE_CMD ps
+            $COMPOSE_CMD -f "$COMPOSE_FILE" ps
 
             log "─────────────────────────────────────"
             log "部署成功！访问地址："
