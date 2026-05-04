@@ -50,7 +50,21 @@ public class TraceIotDataSeeder : IDataSeedContributor, ITransientDependency
 
     private async Task EnsureUserAsync(string userName, string password, string email, string name, string role)
     {
-        if (await _userManager.FindByNameAsync(userName) != null) return;
+        var existing = await _userManager.FindByNameAsync(userName);
+        if (existing != null)
+        {
+            // 用户已存在（可能由 ABP 内置 Seeder 创建），统一重置为项目密码
+            await _userManager.RemovePasswordAsync(existing);
+            var addResult = await _userManager.AddPasswordAsync(existing, password);
+            if (addResult.Succeeded)
+                _logger.LogInformation("已重置用户 {UserName} 密码", userName);
+            else
+                _logger.LogWarning("重置密码失败: {Errors}", string.Join(", ", addResult.Errors.Select(e => e.Description)));
+
+            if (!await _userManager.IsInRoleAsync(existing, role))
+                await _userManager.AddToRoleAsync(existing, role);
+            return;
+        }
 
         var user = new IdentityUser(_guidGenerator.Create(), userName, email)
         {
@@ -65,6 +79,6 @@ public class TraceIotDataSeeder : IDataSeedContributor, ITransientDependency
         }
 
         await _userManager.AddToRoleAsync(user, role);
-        _logger.LogInformation("创建用户: {UserName}，密码: {Password}", userName, password);
+        _logger.LogInformation("创建用户: {UserName}", userName);
     }
 }
