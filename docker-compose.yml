@@ -136,12 +136,6 @@ services:
         condition: service_healthy
     networks:
       - traceiot-net
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
-      interval: 20s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
 
   frontend:
     image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-traceiot}/traceiot-frontend:${TAG:-latest}
@@ -152,9 +146,6 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
-    depends_on:
-      backend:
-        condition: service_healthy
     networks:
       - traceiot-net
 
