@@ -1,23 +1,28 @@
 name: Deploy — 部署到云服务器
 
+# 通过 SCP 上传镜像包到服务器，彻底绕过服务器访问 GHCR 的网络问题
+
 on:
-  # Release 工作流成功后自动触发（main/develop 分支 push 后）
   workflow_run:
     workflows: ["Release — 多架构镜像构建与发布"]
     types: [completed]
     branches: [main, develop]
-  # 支持手动触发（方便重新部署）
   workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Release 工作流运行 ID（留空则从 GHCR 拉取，可能受网络影响）'
+        required: false
+        default: ''
 
 permissions:
   contents: read
-  packages: read   # 用于向服务器传递 GHCR 拉取凭证
+  packages: read
+  actions: read   # 读取其他工作流的 Artifact
 
 jobs:
   deploy:
     name: 部署到云服务器
     runs-on: ubuntu-latest
-    # workflow_run 触发时，只有前置 Release 工作流成功才继续
     if: >
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
@@ -26,8 +31,42 @@ jobs:
       - name: Checkout（获取 docker-compose.yml）
         uses: actions/checkout@v4
 
-      # ── 上传最新 docker-compose.yml 到服务器（先建目录再传文件）─
-      - name: 创建目录 & 上传 docker-compose.yml
+      # ── 确定镜像包来源（workflow_run 自动获取 run_id）────────────
+      - name: 确定 Release 运行 ID
+        id: release_run
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "run_id=${{ github.event.workflow_run.id }}" >> $GITHUB_OUTPUT
+            echo "has_artifacts=true" >> $GITHUB_OUTPUT
+          elif [ -n "${{ github.event.inputs.run_id }}" ]; then
+            echo "run_id=${{ github.event.inputs.run_id }}" >> $GITHUB_OUTPUT
+            echo "has_artifacts=true" >> $GITHUB_OUTPUT
+          else
+            echo "run_id=" >> $GITHUB_OUTPUT
+            echo "has_artifacts=false" >> $GITHUB_OUTPUT
+          fi
+
+      # ── 下载镜像 Artifact（release.yml 打包的 amd64 离线包）──────
+      - name: 下载后端 amd64 镜像包
+        if: steps.release_run.outputs.has_artifacts == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-amd64
+          run-id: ${{ steps.release_run.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: .   # → ./traceiot-backend-amd64.tar.gz
+
+      - name: 下载前端 amd64 镜像包
+        if: steps.release_run.outputs.has_artifacts == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-amd64
+          run-id: ${{ steps.release_run.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: .   # → ./traceiot-frontend-amd64.tar.gz
+
+      # ── 预先创建目标目录（SCP 不支持 sudo，需提前建好）──────────
+      - name: 创建部署目录
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -37,7 +76,8 @@ jobs:
             sudo mkdir -p /opt/traceiot
             sudo chown -R $USER:$USER /opt/traceiot
 
-      - name: SCP docker-compose.yml
+      # ── 上传 docker-compose.yml ──────────────────────────────────
+      - name: 上传 docker-compose.yml
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -46,18 +86,30 @@ jobs:
           source: "docker-compose.yml"
           target: /opt/traceiot
 
-      # ── SSH 远程执行部署脚本 ───────────────────────────────────
-      - name: SSH 部署
-        uses: appleboy/ssh-action@v1.0.3
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GHCR_USER: ${{ github.actor }}
-          REPO_OWNER: ${{ github.repository_owner }}
+      # ── 上传镜像包到服务器 /tmp/（仅有 Artifact 时执行）────────
+      - name: 上传镜像包到服务器
+        if: steps.release_run.outputs.has_artifacts == 'true'
+        uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
-          envs: GHCR_TOKEN,GHCR_USER,REPO_OWNER
+          source: "traceiot-backend-amd64.tar.gz,traceiot-frontend-amd64.tar.gz"
+          target: /tmp/
+
+      # ── SSH 远程执行部署脚本 ─────────────────────────────────────
+      - name: SSH 部署
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          REPO_OWNER: ${{ github.repository_owner }}
+          HAS_ARTIFACTS: ${{ steps.release_run.outputs.has_artifacts }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          envs: REPO_OWNER,HAS_ARTIFACTS,GHCR_TOKEN,GHCR_USER
           command_timeout: 120m
           script: |
             set -e
@@ -74,7 +126,7 @@ jobs:
               ok "Docker 安装完成"
             fi
 
-            # ── 2. 检测 Docker Compose（插件优先，次选独立版，都没有则安装）
+            # ── 2. 检测 Docker Compose（插件优先，次选独立版）──────
             if sudo docker compose version &>/dev/null 2>&1; then
               COMPOSE_CMD="sudo docker compose"
             elif command -v docker-compose &>/dev/null; then
@@ -89,50 +141,72 @@ jobs:
             fi
             ok "Docker Compose: $COMPOSE_CMD"
 
-            # ── 3. 登录 GHCR（拉取私有/公共镜像）────────────────
-            echo "$GHCR_TOKEN" | sudo docker login ghcr.io -u "$GHCR_USER" --password-stdin
-            ok "已登录 GHCR"
-
-            # ── 4. 配置部署参数 ───────────────────────────────────
+            # ── 3. 写入 .env（docker compose 自动读取）────────────
             COMPOSE_FILE="/opt/traceiot/docker-compose.yml"
-
-            # 写入 .env 文件，docker compose 自动读取（sudo 不继承环境变量，用 .env 最可靠）
             printf 'GITHUB_REPOSITORY_OWNER=%s\nTAG=latest\n' "$REPO_OWNER" > /opt/traceiot/.env
 
-            # ── 5. 判断是首次部署还是更新 ────────────────────────
-            RUNNING_COUNT=$(sudo docker ps --filter "name=traceiot" --format "{{.Names}}" 2>/dev/null | wc -l)
+            # ── 4. 加载应用镜像 ───────────────────────────────────
+            if [ "$HAS_ARTIFACTS" = "true" ]; then
+              info "从 SCP 镜像包加载（无需服务器访问 GHCR）..."
 
+              sudo docker load < /tmp/traceiot-backend-amd64.tar.gz
+              sudo docker tag traceiot-backend:offline ghcr.io/$REPO_OWNER/traceiot-backend:latest
+              sudo docker rmi traceiot-backend:offline 2>/dev/null || true
+              ok "后端镜像加载完成"
+
+              sudo docker load < /tmp/traceiot-frontend-amd64.tar.gz
+              sudo docker tag traceiot-frontend:offline ghcr.io/$REPO_OWNER/traceiot-frontend:latest
+              sudo docker rmi traceiot-frontend:offline 2>/dev/null || true
+              ok "前端镜像加载完成"
+
+              rm -f /tmp/traceiot-backend-amd64.tar.gz /tmp/traceiot-frontend-amd64.tar.gz
+            else
+              info "无镜像包，从 GHCR 拉取（手动触发 fallback）..."
+              echo "$GHCR_TOKEN" | sudo docker login ghcr.io -u "$GHCR_USER" --password-stdin
+              for i in 1 2 3; do
+                $COMPOSE_CMD -f "$COMPOSE_FILE" pull backend frontend && break || {
+                  log "第 $i 次拉取失败，10s 后重试..."
+                  sleep 10
+                }
+              done
+            fi
+
+            # ── 5. 基础设施镜像（本地已有则跳过，否则带重试拉取）─
+            for svc in postgres redis influxdb emqx; do
+              IMG=$(sudo docker compose -f "$COMPOSE_FILE" config 2>/dev/null \
+                | grep -A1 "  $svc:" | grep "image:" | awk '{print $2}' || true)
+              if [ -n "$IMG" ] && sudo docker image inspect "$IMG" &>/dev/null 2>&1; then
+                ok "已缓存，跳过: $IMG"
+              else
+                log "拉取基础设施镜像: $svc ..."
+                for i in 1 2 3; do
+                  $COMPOSE_CMD -f "$COMPOSE_FILE" pull "$svc" && break || {
+                    log "第 $i 次失败，10s 后重试..."
+                    sleep 10
+                  }
+                done
+              fi
+            done
+
+            # ── 6. 启动 / 更新服务 ────────────────────────────────
+            RUNNING_COUNT=$(sudo docker ps --filter "name=traceiot" --format "{{.Names}}" 2>/dev/null | wc -l)
             if [ "$RUNNING_COUNT" -gt 0 ]; then
-              info "检测到 ${RUNNING_COUNT} 个 traceiot 容器正在运行，执行滚动更新..."
-              info "基础设施镜像已缓存，仅拉取应用镜像（backend / frontend）..."
-              $COMPOSE_CMD -f "$COMPOSE_FILE" pull backend frontend
+              info "检测到 ${RUNNING_COUNT} 个容器运行中，滚动更新..."
               $COMPOSE_CMD -f "$COMPOSE_FILE" up -d --remove-orphans
               ok "滚动更新完成"
             else
-              info "首次部署，检查并拉取所有缺失镜像..."
-              # 逐个服务检查：本地已有镜像则跳过，否则拉取
-              for svc in postgres redis influxdb emqx backend frontend; do
-                IMG=$(sudo docker compose -f "$COMPOSE_FILE" config 2>/dev/null \
-                  | grep -A1 "  $svc:" | grep "image:" | awk '{print $2}' || true)
-                if [ -n "$IMG" ] && sudo docker image inspect "$IMG" &>/dev/null 2>&1; then
-                  ok "镜像已存在，跳过: $IMG"
-                else
-                  log "拉取镜像: $svc ..."
-                  $COMPOSE_CMD -f "$COMPOSE_FILE" pull "$svc"
-                fi
-              done
+              info "首次部署，启动所有服务..."
               $COMPOSE_CMD -f "$COMPOSE_FILE" up -d
               ok "首次部署完成"
             fi
 
-            # ── 6. 等待并输出状态 ────────────────────────────────
             log "等待服务就绪 (20s)..."
             sleep 20
             $COMPOSE_CMD -f "$COMPOSE_FILE" ps
 
-            log "─────────────────────────────────────"
+            log "────────────────────────────────────────────────"
             log "部署成功！访问地址："
             log "  前端：    http://${{ secrets.SERVER_HOST }}"
             log "  后端 API：http://${{ secrets.SERVER_HOST }}:5000"
             log "  EMQX：    http://${{ secrets.SERVER_HOST }}:18083"
-            log "─────────────────────────────────────"
+            log "────────────────────────────────────────────────"
