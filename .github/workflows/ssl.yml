@@ -1,0 +1,313 @@
+name: SSL — HTTPS 证书申请与自动续签
+
+# ─────────────────────────────────────────────────────────────────
+# 工作原理：
+#   1. 在服务器上启动 nginx-proxy（反向代理）+ acme-companion（Let's Encrypt）
+#   2. acme-companion 监听 Docker 事件，自动为带有 LETSENCRYPT_HOST 的容器申请证书
+#   3. 证书到期前 30 天自动续签（acme-companion 每 24h 检查一次，无需额外 cron）
+#
+# 触发时机：
+#   - 部署工作流完成后自动触发（确保容器已运行再申请证书）
+#   - 可手动触发（首次初始化或排查问题）
+#
+# 需要提前在 GitHub Secrets 中配置：
+#   LETSENCRYPT_EMAIL — Let's Encrypt 注册邮箱（用于证书到期提醒）
+#   SERVER_HOST / SERVER_USER / SERVER_PASSWORD — 服务器 SSH 信息
+# ─────────────────────────────────────────────────────────────────
+
+on:
+  workflow_run:
+    workflows: ["Deploy — 部署到云服务器"]
+    types: [completed]
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  setup-https:
+    name: 配置 HTTPS（nginx-proxy + Let's Encrypt）
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      # Checkout 不需要：本工作流所有文件内容均内联写入服务器，无需仓库文件
+      - name: SSH — 配置 nginx-proxy 反向代理与 SSL 证书
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          DOMAIN: traceiot.zkjgy.online
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          envs: LETSENCRYPT_EMAIL,REPO_OWNER,DOMAIN
+          command_timeout: 15m
+          script: |
+            set -e
+
+            log()  { echo "[$(date '+%H:%M:%S')] $*"; }
+            ok()   { echo "[$(date '+%H:%M:%S')] ✓ $*"; }
+            info() { echo "[$(date '+%H:%M:%S')] → $*"; }
+
+            # ── 检测 Docker Compose（与 deploy.yml 保持一致）────────
+            if sudo docker compose version >/dev/null 2>&1; then
+              DC="sudo docker compose"
+            elif command -v docker-compose >/dev/null 2>&1; then
+              DC="sudo docker-compose"
+            else
+              sudo apt-get update -qq && sudo apt-get install -y docker-compose-plugin
+              DC="sudo docker compose"
+            fi
+
+            # ══════════════════════════════════════════════════════
+            # STEP 1 — 确保 nginx-proxy 共享网络存在
+            # ══════════════════════════════════════════════════════
+            if ! sudo docker network ls --format '{{.Name}}' | grep -q '^nginx-proxy$'; then
+              info "创建共享 Docker 网络: nginx-proxy"
+              sudo docker network create nginx-proxy
+              ok "nginx-proxy 网络已创建"
+            else
+              ok "nginx-proxy 网络已存在"
+            fi
+
+            # ══════════════════════════════════════════════════════
+            # STEP 2 — 确保 nginx-proxy + acme-companion 已运行
+            #   nginx-proxy   : 反向代理，自动读取容器 VIRTUAL_HOST 变量配置路由
+            #   acme-companion: 自动申请/续签 Let's Encrypt 证书
+            # ══════════════════════════════════════════════════════
+            if ! sudo docker ps --filter "name=^nginx-proxy$" --format '{{.Names}}' | grep -q '^nginx-proxy$'; then
+              info "nginx-proxy 未运行，正在初始化反向代理栈..."
+              sudo mkdir -p /opt/nginx-proxy
+
+              printf 'LETSENCRYPT_EMAIL=%s\n' "$LETSENCRYPT_EMAIL" | sudo tee /opt/nginx-proxy/.env > /dev/null
+              sudo chmod 600 /opt/nginx-proxy/.env
+
+              sudo tee /opt/nginx-proxy/docker-compose.yml > /dev/null << 'PROXYEOF'
+            services:
+              nginx-proxy:
+                image: nginxproxy/nginx-proxy:alpine
+                container_name: nginx-proxy
+                ports:
+                  - "80:80"
+                  - "443:443"
+                volumes:
+                  - certs:/etc/nginx/certs
+                  - vhost:/etc/nginx/vhost.d
+                  - html:/usr/share/nginx/html
+                  - /var/run/docker.sock:/tmp/docker.sock:ro
+                restart: unless-stopped
+                networks:
+                  - nginx-proxy
+
+              acme-companion:
+                image: nginxproxy/acme-companion
+                container_name: nginx-proxy-acme
+                depends_on:
+                  - nginx-proxy
+                volumes_from:
+                  - nginx-proxy
+                volumes:
+                  - /var/run/docker.sock:/var/run/docker.sock:ro
+                  - acme:/etc/acme.sh
+                environment:
+                  - DEFAULT_EMAIL=${LETSENCRYPT_EMAIL}
+                restart: unless-stopped
+                networks:
+                  - nginx-proxy
+
+            volumes:
+              certs:
+              vhost:
+              html:
+              acme:
+
+            networks:
+              nginx-proxy:
+                external: true
+            PROXYEOF
+
+              cd /opt/nginx-proxy
+              $DC up -d
+              ok "nginx-proxy 反向代理栈已启动"
+            else
+              ok "nginx-proxy 已在运行，跳过初始化"
+            fi
+
+            # ══════════════════════════════════════════════════════
+            # STEP 3 — 更新 traceiot 生产配置，接入 nginx-proxy
+            #   - frontend 从 ports:80 改为 expose:80（避免端口冲突）
+            #   - 添加 VIRTUAL_HOST / LETSENCRYPT_HOST 让 nginx-proxy 自动路由
+            #   - 更新后端 CORS 允许 HTTPS 域名
+            # ══════════════════════════════════════════════════════
+            info "更新 traceiot 生产 docker-compose 配置..."
+            sudo mkdir -p /opt/traceiot
+
+            sudo tee /opt/traceiot/docker-compose.yml > /dev/null << TRACEIOTEOF
+            version: '3.8'
+
+            services:
+              postgres:
+                image: postgres:16
+                container_name: traceiot-postgres
+                restart: unless-stopped
+                environment:
+                  POSTGRES_DB: traceiot
+                  POSTGRES_USER: postgres
+                  POSTGRES_PASSWORD: traceiot123
+                volumes:
+                  - postgres_data:/var/lib/postgresql/data
+                networks:
+                  - traceiot-net
+                healthcheck:
+                  test: ["CMD-SHELL", "pg_isready -U postgres -d traceiot"]
+                  interval: 10s
+                  timeout: 5s
+                  retries: 5
+
+              redis:
+                image: redis:7-alpine
+                container_name: traceiot-redis
+                restart: unless-stopped
+                command: redis-server --appendonly yes
+                volumes:
+                  - redis_data:/data
+                networks:
+                  - traceiot-net
+                healthcheck:
+                  test: ["CMD", "redis-cli", "ping"]
+                  interval: 10s
+                  timeout: 3s
+                  retries: 5
+
+              influxdb:
+                image: influxdb:2.7
+                container_name: traceiot-influxdb
+                restart: unless-stopped
+                environment:
+                  DOCKER_INFLUXDB_INIT_MODE: setup
+                  DOCKER_INFLUXDB_INIT_USERNAME: admin
+                  DOCKER_INFLUXDB_INIT_PASSWORD: traceiot123
+                  DOCKER_INFLUXDB_INIT_ORG: traceiot
+                  DOCKER_INFLUXDB_INIT_BUCKET: gps
+                  DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: traceiot-influxdb-token-2024
+                volumes:
+                  - influxdb_data:/var/lib/influxdb2
+                networks:
+                  - traceiot-net
+                healthcheck:
+                  test: ["CMD", "influx", "ping"]
+                  interval: 15s
+                  timeout: 5s
+                  retries: 5
+
+              emqx:
+                image: emqx:5.8
+                container_name: traceiot-emqx
+                restart: unless-stopped
+                environment:
+                  EMQX_NAME: traceiot-emqx
+                  EMQX_HOST: 127.0.0.1
+                ports:
+                  - "1883:1883"
+                  - "8083:8083"
+                  - "18083:18083"
+                volumes:
+                  - emqx_data:/opt/emqx/data
+                  - emqx_log:/opt/emqx/log
+                networks:
+                  - traceiot-net
+                healthcheck:
+                  test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
+                  interval: 15s
+                  timeout: 5s
+                  retries: 5
+
+              backend:
+                image: ghcr.io/${REPO_OWNER}/traceiot-backend:latest
+                container_name: traceiot-backend
+                restart: unless-stopped
+                ports:
+                  - "5000:5000"
+                environment:
+                  - ASPNETCORE_ENVIRONMENT=Production
+                  - ConnectionStrings__Default=Host=traceiot-postgres;Port=5432;Database=traceiot;Username=postgres;Password=traceiot123
+                  - Redis__Configuration=traceiot-redis:6379
+                  - InfluxDB__Url=http://traceiot-influxdb:8086
+                  - InfluxDB__Token=traceiot-influxdb-token-2024
+                  - InfluxDB__Org=traceiot
+                  - InfluxDB__Bucket=gps
+                  - Mqtt__Host=traceiot-emqx
+                  - Mqtt__Port=1883
+                  - Jwt__Key=TraceIot-JWT-Secret-Key-2024-Must-Be-At-Least-32-Chars!
+                  - Jwt__Issuer=TraceIot
+                  - Jwt__Audience=TraceIotFrontend
+                  - App__CorsOrigins=http://localhost,http://${DOMAIN},https://${DOMAIN}
+                depends_on:
+                  postgres:
+                    condition: service_healthy
+                  redis:
+                    condition: service_healthy
+                  influxdb:
+                    condition: service_healthy
+                  emqx:
+                    condition: service_healthy
+                networks:
+                  - traceiot-net
+
+              frontend:
+                image: ghcr.io/${REPO_OWNER}/traceiot-frontend:latest
+                container_name: traceiot-frontend
+                restart: unless-stopped
+                expose:
+                  - "80"
+                environment:
+                  - VIRTUAL_HOST=${DOMAIN}
+                  - VIRTUAL_PORT=80
+                  - LETSENCRYPT_HOST=${DOMAIN}
+                networks:
+                  - traceiot-net
+                  - nginx-proxy
+
+            volumes:
+              postgres_data:
+              redis_data:
+              influxdb_data:
+              emqx_data:
+              emqx_log:
+
+            networks:
+              traceiot-net:
+                driver: bridge
+              nginx-proxy:
+                external: true
+            TRACEIOTEOF
+
+            ok "docker-compose.yml 已更新（HTTPS 模式）"
+
+            # ══════════════════════════════════════════════════════
+            # STEP 4 — 重启 traceiot 服务使配置生效
+            # ══════════════════════════════════════════════════════
+            info "重启 traceiot 服务..."
+            cd /opt/traceiot
+            printf 'GITHUB_REPOSITORY_OWNER=%s\nTAG=latest\n' "$REPO_OWNER" > /opt/traceiot/.env
+
+            $DC -f /opt/traceiot/docker-compose.yml down --remove-orphans || true
+            $DC -f /opt/traceiot/docker-compose.yml up -d
+            ok "traceiot 服务已重启"
+
+            log "等待服务就绪 (20s)..."
+            sleep 20
+            $DC -f /opt/traceiot/docker-compose.yml ps
+
+            log "──────────────────────────────────────────────"
+            log "HTTPS 配置完成！"
+            log "  HTTP  : http://${DOMAIN}  （重定向到 HTTPS）"
+            log "  HTTPS : https://${DOMAIN}"
+            log "  注意  : SSL 证书将在首次访问后 1~2 分钟内自动申请完成"
+            log "  续签  : acme-companion 每 24h 自动检查并续签（无需手动操作）"
+            log "──────────────────────────────────────────────"

@@ -26,8 +26,8 @@ jobs:
       - name: Checkout（获取 docker-compose.yml）
         uses: actions/checkout@v4
 
-      # ── 预先创建目标目录并赋权（SCP 不支持 sudo，需提前建好）──
-      - name: 创建部署目录
+      # ── 上传最新 docker-compose.yml 到服务器（先建目录再传文件）─
+      - name: 创建目录 & 上传 docker-compose.yml
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -37,8 +37,7 @@ jobs:
             sudo mkdir -p /opt/traceiot
             sudo chown -R $USER:$USER /opt/traceiot
 
-      # ── 上传最新 docker-compose.yml 到服务器 ──────────────────
-      - name: 上传 docker-compose.yml 到服务器
+      - name: SCP docker-compose.yml
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -68,42 +67,27 @@ jobs:
             info() { echo "[$(date '+%H:%M:%S')] → $*"; }
 
             # ── 1. 检查 / 安装 Docker ─────────────────────────────
-            if command -v docker &>/dev/null; then
-              ok "Docker 已安装: $(sudo docker --version)"
-            else
+            if ! command -v docker &>/dev/null; then
               log "正在安装 Docker..."
               curl -fsSL https://get.docker.com | sudo sh
               sudo systemctl enable --now docker
               ok "Docker 安装完成"
             fi
 
-            # ── 2. 检查 / 安装 Docker Compose（有一个即可）──────
+            # ── 2. 检测 Docker Compose（插件优先，次选独立版，都没有则安装）
             if sudo docker compose version &>/dev/null 2>&1; then
-              ok "Docker Compose 插件已安装: $(sudo docker compose version)"
               COMPOSE_CMD="sudo docker compose"
             elif command -v docker-compose &>/dev/null; then
-              ok "docker-compose 已安装: $(sudo docker-compose --version)"
               COMPOSE_CMD="sudo docker-compose"
             else
-              log "正在安装 Docker Compose 插件..."
-              if command -v apt-get &>/dev/null; then
-                sudo apt-get update -qq
-                sudo apt-get install -y docker-compose-plugin
-              else
-                # 兜底：直接下载独立二进制
-                COMPOSE_VER=$(curl -fsSL https://api.github.com/repos/docker/compose/releases/latest \
-                  | grep '"tag_name"' | cut -d'"' -f4)
-                sudo curl -fsSL -o /usr/local/bin/docker-compose \
-                  "https://github.com/docker/compose/releases/download/${COMPOSE_VER}/docker-compose-$(uname -s)-$(uname -m)"
-                sudo chmod +x /usr/local/bin/docker-compose
-                COMPOSE_CMD="sudo docker-compose"
-              fi
-              # apt 安装后优先用插件
-              if sudo docker compose version &>/dev/null 2>&1; then
-                COMPOSE_CMD="sudo docker compose"
-              fi
-              ok "Docker Compose 安装完成: $COMPOSE_CMD"
+              sudo apt-get update -qq && sudo apt-get install -y docker-compose-plugin 2>/dev/null \
+                || { VER=$(curl -fsSL https://api.github.com/repos/docker/compose/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+                     sudo curl -fsSL -o /usr/local/bin/docker-compose \
+                       "https://github.com/docker/compose/releases/download/${VER}/docker-compose-$(uname -s)-$(uname -m)"
+                     sudo chmod +x /usr/local/bin/docker-compose; }
+              sudo docker compose version &>/dev/null 2>&1 && COMPOSE_CMD="sudo docker compose" || COMPOSE_CMD="sudo docker-compose"
             fi
+            ok "Docker Compose: $COMPOSE_CMD"
 
             # ── 3. 登录 GHCR（拉取私有/公共镜像）────────────────
             echo "$GHCR_TOKEN" | sudo docker login ghcr.io -u "$GHCR_USER" --password-stdin
