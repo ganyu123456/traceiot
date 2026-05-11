@@ -82,6 +82,23 @@ jobs:
             # ══════════════════════════════════════════════════════
             if ! sudo docker ps --filter "name=^nginx-proxy$" --format '{{.Names}}' | grep -q '^nginx-proxy$'; then
               info "nginx-proxy 未运行，正在初始化反向代理栈..."
+
+              # 检测宿主机是否已有系统级 nginx 占用 80 端口
+              if systemctl is-active --quiet nginx 2>/dev/null; then
+                log "⚠️  检测到宿主机已有 nginx 系统服务运行在 80 端口"
+                log "    请手动配置宿主机 nginx 反向代理并使用 certbot 申请证书"
+                log "    本工作流将跳过 nginx-proxy 容器创建"
+                exit 0
+              fi
+
+              # 临时停止占用 80 端口的容器（通常是 traceiot-frontend）
+              # ssl.yml 后续会以 expose 模式重启 frontend，不再占用宿主机 80 端口
+              PORT80_CONTAINERS=$(sudo docker ps --filter "publish=80" -q 2>/dev/null || true)
+              if [ -n "$PORT80_CONTAINERS" ]; then
+                info "临时停止占用 80 端口的容器（后续将以 expose 模式重启）..."
+                echo "$PORT80_CONTAINERS" | xargs sudo docker stop
+                ok "80 端口已释放"
+              fi
               sudo mkdir -p /opt/nginx-proxy
 
               printf 'LETSENCRYPT_EMAIL=%s\n' "$LETSENCRYPT_EMAIL" | sudo tee /opt/nginx-proxy/.env > /dev/null
