@@ -1,6 +1,6 @@
 name: Deploy — 部署到云服务器
 
-# 通过 SCP 上传镜像包到服务器，彻底绕过服务器访问 GHCR 的网络问题
+# 服务器直接从 GHCR 拉镜像，彻底避免跨境 SCP 上传瓶颈
 
 on:
   workflow_run:
@@ -8,16 +8,10 @@ on:
     types: [completed]
     branches: [main, develop]
   workflow_dispatch:
-    inputs:
-      run_id:
-        description: 'Release 工作流运行 ID（留空则从 GHCR 拉取，可能受网络影响）'
-        required: false
-        default: ''
 
 permissions:
   contents: read
   packages: read
-  actions: read   # 读取其他工作流的 Artifact
 
 jobs:
   deploy:
@@ -31,41 +25,7 @@ jobs:
       - name: Checkout（获取 docker-compose.yml）
         uses: actions/checkout@v4
 
-      # ── 确定镜像包来源（workflow_run 自动获取 run_id）────────────
-      - name: 确定 Release 运行 ID
-        id: release_run
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            echo "run_id=${{ github.event.workflow_run.id }}" >> $GITHUB_OUTPUT
-            echo "has_artifacts=true" >> $GITHUB_OUTPUT
-          elif [ -n "${{ github.event.inputs.run_id }}" ]; then
-            echo "run_id=${{ github.event.inputs.run_id }}" >> $GITHUB_OUTPUT
-            echo "has_artifacts=true" >> $GITHUB_OUTPUT
-          else
-            echo "run_id=" >> $GITHUB_OUTPUT
-            echo "has_artifacts=false" >> $GITHUB_OUTPUT
-          fi
-
-      # ── 下载镜像 Artifact（release.yml 打包的 amd64 离线包）──────
-      - name: 下载后端 amd64 镜像包
-        if: steps.release_run.outputs.has_artifacts == 'true'
-        uses: actions/download-artifact@v4
-        with:
-          name: backend-amd64
-          run-id: ${{ steps.release_run.outputs.run_id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          path: .   # → ./traceiot-backend-amd64.tar.gz
-
-      - name: 下载前端 amd64 镜像包
-        if: steps.release_run.outputs.has_artifacts == 'true'
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend-amd64
-          run-id: ${{ steps.release_run.outputs.run_id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          path: .   # → ./traceiot-frontend-amd64.tar.gz
-
-      # ── 预先创建目标目录（SCP 不支持 sudo，需提前建好）──────────
+      # ── 预先创建目标目录 ──────────────────────────────────────
       - name: 创建部署目录
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -87,40 +47,19 @@ jobs:
           source: "docker-compose.yml"
           target: /tmp/
 
-      # ── 打印镜像包大小（方便排查上传速度问题）─────────────────
-      - name: 查看镜像包大小
-        if: steps.release_run.outputs.has_artifacts == 'true'
-        run: |
-          echo "=== 待上传文件大小 ==="
-          ls -lh traceiot-backend-amd64.tar.gz traceiot-frontend-amd64.tar.gz 2>/dev/null || echo "文件不存在"
-          echo "合计: $(du -sh traceiot-*-amd64.tar.gz 2>/dev/null | awk '{sum+=$1} END{print sum "M"}' || echo '未知')"
-          echo "预计上传时间（3Mbps）: $(echo "scale=1; $(stat -c%s traceiot-backend-amd64.tar.gz traceiot-frontend-amd64.tar.gz 2>/dev/null | awk '{s+=$1}END{print s}') / 375000" | bc) 秒"
-
-      # ── 上传镜像包到服务器 /tmp/（仅有 Artifact 时执行）────────
-      - name: 上传镜像包到服务器
-        if: steps.release_run.outputs.has_artifacts == 'true'
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          password: ${{ secrets.SERVER_PASSWORD }}
-          source: "traceiot-backend-amd64.tar.gz,traceiot-frontend-amd64.tar.gz"
-          target: /tmp/
-
       # ── SSH 远程执行部署脚本 ─────────────────────────────────────
       - name: SSH 部署
         uses: appleboy/ssh-action@v1.0.3
         env:
           REPO_OWNER: ${{ github.repository_owner }}
-          HAS_ARTIFACTS: ${{ steps.release_run.outputs.has_artifacts }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_USER: ${{ github.actor }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
-          envs: REPO_OWNER,HAS_ARTIFACTS,GHCR_TOKEN,GHCR_USER
-          command_timeout: 120m
+          envs: REPO_OWNER,GHCR_TOKEN,GHCR_USER
+          command_timeout: 60m
           script: |
             set -e
 
@@ -136,7 +75,7 @@ jobs:
                 | sudo tee /etc/docker/daemon.json > /dev/null
               sudo systemctl reload docker 2>/dev/null || sudo systemctl restart docker 2>/dev/null || true
               sleep 3
-              ok "镜像加速已配置（后续 docker pull 走腾讯云内网）"
+              ok "镜像加速已配置（Docker Hub 走腾讯云内网）"
             else
               ok "Docker 镜像加速已配置，跳过"
             fi
@@ -168,8 +107,6 @@ jobs:
             printf 'GITHUB_REPOSITORY_OWNER=%s\nTAG=latest\n' "$REPO_OWNER" > /opt/traceiot/.env
 
             # ── 3.5 选择 docker-compose.yml（防止覆盖 ssl.yml 的 HTTPS 配置）──
-            # ssl.yml 运行后 nginx-proxy 占用 80 端口，服务器上的 docker-compose.yml
-            # 已把 frontend 改为 expose 模式；若此时用仓库版（ports:80）会导致端口冲突。
             COMPOSE_FILE="/opt/traceiot/docker-compose.yml"
             if sudo docker ps --filter "name=^nginx-proxy$" --format '{{.Names}}' | grep -q nginx-proxy; then
               info "检测到 nginx-proxy（HTTPS 已配置），保留服务器现有 docker-compose.yml"
@@ -178,34 +115,26 @@ jobs:
               cp /tmp/docker-compose.yml "$COMPOSE_FILE"
             fi
 
-            # ── 4. 加载应用镜像 ───────────────────────────────────
-            if [ "$HAS_ARTIFACTS" = "true" ]; then
-              info "从 SCP 镜像包加载（无需服务器访问 GHCR）..."
+            # ── 4. 从 GHCR 拉取应用镜像（取代 SCP 上传，利用服务器本地网络）──
+            info "登录 GHCR..."
+            echo "$GHCR_TOKEN" | sudo docker login ghcr.io -u "$GHCR_USER" --password-stdin
 
-              sudo docker load < /tmp/traceiot-backend-amd64.tar.gz
-              sudo docker tag traceiot-backend:offline ghcr.io/$REPO_OWNER/traceiot-backend:latest
-              sudo docker rmi traceiot-backend:offline 2>/dev/null || true
-              ok "后端镜像加载完成"
-
-              sudo docker load < /tmp/traceiot-frontend-amd64.tar.gz
-              sudo docker tag traceiot-frontend:offline ghcr.io/$REPO_OWNER/traceiot-frontend:latest
-              sudo docker rmi traceiot-frontend:offline 2>/dev/null || true
-              ok "前端镜像加载完成"
-
-              rm -f /tmp/traceiot-backend-amd64.tar.gz /tmp/traceiot-frontend-amd64.tar.gz
-            else
-              info "无镜像包，从 GHCR 拉取（手动触发 fallback）..."
-              echo "$GHCR_TOKEN" | sudo docker login ghcr.io -u "$GHCR_USER" --password-stdin
+            pull_with_retry() {
+              local img="$1"
+              log "拉取镜像: $img ..."
               for i in 1 2 3; do
-                $COMPOSE_CMD -f "$COMPOSE_FILE" pull backend frontend && break || {
-                  log "第 $i 次拉取失败，10s 后重试..."
-                  sleep 10
+                sudo docker pull "$img" && { ok "$img 拉取完成"; return 0; } || {
+                  log "第 $i 次失败，15s 后重试..."
+                  sleep 15
                 }
               done
-            fi
+              log "⚠ $img 拉取失败（3 次），将由 compose up 兜底"
+            }
+
+            pull_with_retry "ghcr.io/$REPO_OWNER/traceiot-backend:latest"
+            pull_with_retry "ghcr.io/$REPO_OWNER/traceiot-frontend:latest"
 
             # ── 5. 基础设施镜像（本地已有则跳过，否则带重试拉取）─
-            # 用精确镜像名检测缓存，避免 docker compose config grep 解析不稳定的问题
             pull_if_missing() {
               local img="$1"
               if sudo docker image inspect "$img" &>/dev/null 2>&1; then
