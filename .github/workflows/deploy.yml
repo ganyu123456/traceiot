@@ -87,6 +87,15 @@ jobs:
           source: "docker-compose.yml"
           target: /tmp/
 
+      # ── 打印镜像包大小（方便排查上传速度问题）─────────────────
+      - name: 查看镜像包大小
+        if: steps.release_run.outputs.has_artifacts == 'true'
+        run: |
+          echo "=== 待上传文件大小 ==="
+          ls -lh traceiot-backend-amd64.tar.gz traceiot-frontend-amd64.tar.gz 2>/dev/null || echo "文件不存在"
+          echo "合计: $(du -sh traceiot-*-amd64.tar.gz 2>/dev/null | awk '{sum+=$1} END{print sum "M"}' || echo '未知')"
+          echo "预计上传时间（3Mbps）: $(echo "scale=1; $(stat -c%s traceiot-backend-amd64.tar.gz traceiot-frontend-amd64.tar.gz 2>/dev/null | awk '{s+=$1}END{print s}') / 375000" | bc) 秒"
+
       # ── 上传镜像包到服务器 /tmp/（仅有 Artifact 时执行）────────
       - name: 上传镜像包到服务器
         if: steps.release_run.outputs.has_artifacts == 'true'
