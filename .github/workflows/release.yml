@@ -68,6 +68,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_TOKEN }}
 
+      - name: 登录 Harbor（国内仓库，加速服务器拉取）
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.HARBOR_HOST }}
+          username: ${{ secrets.HARBOR_USER }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
       - name: NuGet 缓存（加速 .NET 构建）
         uses: actions/cache@v4
         with:
@@ -75,7 +82,7 @@ jobs:
           key: nuget-${{ matrix.arch }}-${{ hashFiles('backend/**/*.csproj') }}
           restore-keys: nuget-${{ matrix.arch }}-
 
-      # 构建单架构镜像并推送到 GHCR（带架构后缀 tag）
+      # 构建单架构镜像并推送到 GHCR + Harbor（带架构后缀 tag）
       - name: 构建并推送后端镜像（${{ matrix.arch }}）
         uses: docker/build-push-action@v6
         with:
@@ -83,7 +90,9 @@ jobs:
           dockerfile: Dockerfile
           platforms: ${{ matrix.platform }}
           push: true
-          tags: ${{ env.BACKEND_IMAGE }}:${{ steps.version.outputs.tag }}-${{ matrix.arch }}
+          tags: |
+            ${{ env.BACKEND_IMAGE }}:${{ steps.version.outputs.tag }}-${{ matrix.arch }}
+            ${{ secrets.HARBOR_HOST }}/${{ secrets.HARBOR_PROJECT }}/traceiot-backend:${{ steps.version.outputs.tag }}-${{ matrix.arch }}
           cache-from: type=gha,scope=backend-${{ matrix.arch }}
           cache-to:   type=gha,scope=backend-${{ matrix.arch }},mode=max
           labels: |
@@ -155,6 +164,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_TOKEN }}
 
+      - name: 登录 Harbor（国内仓库，加速服务器拉取）
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.HARBOR_HOST }}
+          username: ${{ secrets.HARBOR_USER }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
       - name: Node.js 依赖缓存
         uses: actions/cache@v4
         with:
@@ -168,7 +184,9 @@ jobs:
           dockerfile: frontend/Dockerfile
           platforms: ${{ matrix.platform }}
           push: true
-          tags: ${{ env.FRONTEND_IMAGE }}:${{ steps.version.outputs.tag }}-${{ matrix.arch }}
+          tags: |
+            ${{ env.FRONTEND_IMAGE }}:${{ steps.version.outputs.tag }}-${{ matrix.arch }}
+            ${{ secrets.HARBOR_HOST }}/${{ secrets.HARBOR_PROJECT }}/traceiot-frontend:${{ steps.version.outputs.tag }}-${{ matrix.arch }}
           cache-from: type=gha,scope=frontend-${{ matrix.arch }}
           cache-to:   type=gha,scope=frontend-${{ matrix.arch }},mode=max
           labels: |
@@ -226,42 +244,67 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_TOKEN }}
 
+      - name: 登录 Harbor（国内仓库）
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.HARBOR_HOST }}
+          username: ${{ secrets.HARBOR_USER }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
       # 将 amd64 + arm64 两个单架构 tag 合并为一个多架构 Manifest
       - name: 合并后端多架构 Manifest
         run: |
           TAG="${{ steps.version.outputs.tag }}"
+          HARBOR_BACKEND="${{ secrets.HARBOR_HOST }}/${{ secrets.HARBOR_PROJECT }}/traceiot-backend"
           if [ "$TAG" = "latest" ]; then
             docker buildx imagetools create \
               --tag ${{ env.BACKEND_IMAGE }}:latest \
               ${{ env.BACKEND_IMAGE }}:latest-amd64 \
               ${{ env.BACKEND_IMAGE }}:latest-arm64
+            docker buildx imagetools create \
+              --tag ${HARBOR_BACKEND}:latest \
+              ${HARBOR_BACKEND}:latest-amd64 \
+              ${HARBOR_BACKEND}:latest-arm64
           else
             docker buildx imagetools create \
               --tag ${{ env.BACKEND_IMAGE }}:${TAG} \
               --tag ${{ env.BACKEND_IMAGE }}:latest \
               ${{ env.BACKEND_IMAGE }}:${TAG}-amd64 \
               ${{ env.BACKEND_IMAGE }}:${TAG}-arm64
+            docker buildx imagetools create \
+              --tag ${HARBOR_BACKEND}:${TAG} \
+              --tag ${HARBOR_BACKEND}:latest \
+              ${HARBOR_BACKEND}:${TAG}-amd64 \
+              ${HARBOR_BACKEND}:${TAG}-arm64
           fi
-          echo "后端多架构 Manifest 已推送："
-          docker buildx imagetools inspect ${{ env.BACKEND_IMAGE }}:${TAG}
+          echo "后端多架构 Manifest 已推送（GHCR + Harbor）"
 
       - name: 合并前端多架构 Manifest
         run: |
           TAG="${{ steps.version.outputs.tag }}"
+          HARBOR_FRONTEND="${{ secrets.HARBOR_HOST }}/${{ secrets.HARBOR_PROJECT }}/traceiot-frontend"
           if [ "$TAG" = "latest" ]; then
             docker buildx imagetools create \
               --tag ${{ env.FRONTEND_IMAGE }}:latest \
               ${{ env.FRONTEND_IMAGE }}:latest-amd64 \
               ${{ env.FRONTEND_IMAGE }}:latest-arm64
+            docker buildx imagetools create \
+              --tag ${HARBOR_FRONTEND}:latest \
+              ${HARBOR_FRONTEND}:latest-amd64 \
+              ${HARBOR_FRONTEND}:latest-arm64
           else
             docker buildx imagetools create \
               --tag ${{ env.FRONTEND_IMAGE }}:${TAG} \
               --tag ${{ env.FRONTEND_IMAGE }}:latest \
               ${{ env.FRONTEND_IMAGE }}:${TAG}-amd64 \
               ${{ env.FRONTEND_IMAGE }}:${TAG}-arm64
+            docker buildx imagetools create \
+              --tag ${HARBOR_FRONTEND}:${TAG} \
+              --tag ${HARBOR_FRONTEND}:latest \
+              ${HARBOR_FRONTEND}:${TAG}-amd64 \
+              ${HARBOR_FRONTEND}:${TAG}-arm64
           fi
-          echo "前端多架构 Manifest 已推送："
-          docker buildx imagetools inspect ${{ env.FRONTEND_IMAGE }}:${TAG}
+          echo "前端多架构 Manifest 已推送（GHCR + Harbor）"
 
   # ──────────────────────────────────────────────────────────
   # Job 4: 打包离线部署包并创建 GitHub Release

@@ -52,13 +52,15 @@ jobs:
         uses: appleboy/ssh-action@v1.0.3
         env:
           REPO_OWNER: ${{ github.repository_owner }}
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GHCR_USER: ${{ github.actor }}
+          HARBOR_HOST: ${{ secrets.HARBOR_HOST }}
+          HARBOR_PROJECT: ${{ secrets.HARBOR_PROJECT }}
+          HARBOR_USER: ${{ secrets.HARBOR_USER }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
-          envs: REPO_OWNER,GHCR_TOKEN,GHCR_USER
+          envs: REPO_OWNER,HARBOR_HOST,HARBOR_PROJECT,HARBOR_USER,HARBOR_PASSWORD
           command_timeout: 60m
           script: |
             set -e
@@ -115,9 +117,9 @@ jobs:
               cp /tmp/docker-compose.yml "$COMPOSE_FILE"
             fi
 
-            # ── 4. 从 GHCR 拉取应用镜像（取代 SCP 上传，利用服务器本地网络）──
-            info "登录 GHCR..."
-            echo "$GHCR_TOKEN" | sudo docker login ghcr.io -u "$GHCR_USER" --password-stdin
+            # ── 4. 从 Harbor（国内仓库）拉取应用镜像 ────────────────
+            info "登录 Harbor: $HARBOR_HOST ..."
+            echo "$HARBOR_PASSWORD" | sudo docker login "$HARBOR_HOST" -u "$HARBOR_USER" --password-stdin
 
             pull_with_retry() {
               local img="$1"
@@ -131,8 +133,15 @@ jobs:
               log "⚠ $img 拉取失败（3 次），将由 compose up 兜底"
             }
 
-            pull_with_retry "ghcr.io/$REPO_OWNER/traceiot-backend:latest"
-            pull_with_retry "ghcr.io/$REPO_OWNER/traceiot-frontend:latest"
+            HARBOR_BACKEND="$HARBOR_HOST/$HARBOR_PROJECT/traceiot-backend:latest"
+            HARBOR_FRONTEND="$HARBOR_HOST/$HARBOR_PROJECT/traceiot-frontend:latest"
+
+            pull_with_retry "$HARBOR_BACKEND"
+            pull_with_retry "$HARBOR_FRONTEND"
+
+            # 重新打标签，与 docker-compose.yml 中的镜像名对齐
+            sudo docker tag "$HARBOR_BACKEND" "ghcr.io/$REPO_OWNER/traceiot-backend:latest"
+            sudo docker tag "$HARBOR_FRONTEND" "ghcr.io/$REPO_OWNER/traceiot-frontend:latest"
 
             # ── 5. 基础设施镜像（本地已有则跳过，否则带重试拉取）─
             pull_if_missing() {
