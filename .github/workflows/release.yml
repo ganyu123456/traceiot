@@ -4,20 +4,14 @@ on:
   push:
     branches: [main, develop]   # 每次推送代码自动构建 latest 镜像
     tags:
-      - 'v*.*.*'                 # 打 tag 时额外创建 GitHub Release
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: '版本号（如 v1.0.0）'
-        required: true
-        default: 'v0.0.0-dev'
+      - 'v*.*.*'                 # 打 tag 时同时推送版本号 tag
+  workflow_dispatch:             # 支持手动触发
 
 env:
   REGISTRY: ghcr.io
   BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/traceiot-backend
   FRONTEND_IMAGE: ghcr.io/${{ github.repository_owner }}/traceiot-frontend
 
-# 全局最小权限基线，各 Job 按需覆盖
 permissions:
   contents: read
 
@@ -27,18 +21,20 @@ jobs:
   # ──────────────────────────────────────────────────────────
   build-backend:
     name: 后端镜像 (${{ matrix.arch }})
-    runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write   # 推送镜像到 GHCR 必须
+      packages: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: amd64
             platform: linux/amd64
+            runner: ubuntu-latest
           - arch: arm64
             platform: linux/arm64
+            runner: ubuntu-24.04-arm   # GitHub 原生 ARM64 runner，无需 QEMU
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - name: Checkout
@@ -47,16 +43,11 @@ jobs:
       - name: 确定版本标签
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           else
             echo "tag=latest" >> $GITHUB_OUTPUT
           fi
-
-      - name: 配置 QEMU（支持跨架构模拟）
-        uses: docker/setup-qemu-action@v3
 
       - name: 配置 Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -82,7 +73,6 @@ jobs:
           key: nuget-${{ matrix.arch }}-${{ hashFiles('backend/**/*.csproj') }}
           restore-keys: nuget-${{ matrix.arch }}-
 
-      # 构建单架构镜像并推送到 GHCR + Harbor（带架构后缀 tag）
       - name: 构建并推送后端镜像（${{ matrix.arch }}）
         uses: docker/build-push-action@v6
         with:
@@ -100,41 +90,25 @@ jobs:
             org.opencontainers.image.version=${{ steps.version.outputs.tag }}
             org.opencontainers.image.revision=${{ github.sha }}
 
-      # 将已推送的单架构镜像拉下来另存为离线 tar 包
-      - name: 导出离线镜像包（${{ matrix.arch }}）
-        run: |
-          docker pull --platform ${{ matrix.platform }} \
-            ${{ env.BACKEND_IMAGE }}:${{ steps.version.outputs.tag }}-${{ matrix.arch }}
-          docker tag \
-            ${{ env.BACKEND_IMAGE }}:${{ steps.version.outputs.tag }}-${{ matrix.arch }} \
-            traceiot-backend:offline
-          docker save traceiot-backend:offline | gzip > traceiot-backend-${{ matrix.arch }}.tar.gz
-          echo "压缩后大小: $(du -sh traceiot-backend-${{ matrix.arch }}.tar.gz | cut -f1)"
-
-      - name: 上传离线包 Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: backend-${{ matrix.arch }}
-          path: traceiot-backend-${{ matrix.arch }}.tar.gz
-          retention-days: 3
-
   # ──────────────────────────────────────────────────────────
   # Job 2: 构建前端多架构镜像（matrix: amd64 / arm64）
   # ──────────────────────────────────────────────────────────
   build-frontend:
     name: 前端镜像 (${{ matrix.arch }})
-    runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write   # 推送镜像到 GHCR 必须
+      packages: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: amd64
             platform: linux/amd64
+            runner: ubuntu-latest
           - arch: arm64
             platform: linux/arm64
+            runner: ubuntu-24.04-arm   # GitHub 原生 ARM64 runner，无需 QEMU
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - name: Checkout
@@ -143,16 +117,11 @@ jobs:
       - name: 确定版本标签
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           else
             echo "tag=latest" >> $GITHUB_OUTPUT
           fi
-
-      - name: 配置 QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: 配置 Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -194,25 +163,8 @@ jobs:
             org.opencontainers.image.version=${{ steps.version.outputs.tag }}
             org.opencontainers.image.revision=${{ github.sha }}
 
-      - name: 导出离线镜像包（${{ matrix.arch }}）
-        run: |
-          docker pull --platform ${{ matrix.platform }} \
-            ${{ env.FRONTEND_IMAGE }}:${{ steps.version.outputs.tag }}-${{ matrix.arch }}
-          docker tag \
-            ${{ env.FRONTEND_IMAGE }}:${{ steps.version.outputs.tag }}-${{ matrix.arch }} \
-            traceiot-frontend:offline
-          docker save traceiot-frontend:offline | gzip > traceiot-frontend-${{ matrix.arch }}.tar.gz
-          echo "压缩后大小: $(du -sh traceiot-frontend-${{ matrix.arch }}.tar.gz | cut -f1)"
-
-      - name: 上传离线包 Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-${{ matrix.arch }}
-          path: traceiot-frontend-${{ matrix.arch }}.tar.gz
-          retention-days: 3
-
   # ──────────────────────────────────────────────────────────
-  # Job 3: 合并多架构 Manifest 推送到 GHCR
+  # Job 3: 合并多架构 Manifest（amd64 + arm64 → :latest）
   # ──────────────────────────────────────────────────────────
   merge-manifests:
     name: 合并多架构 Manifest
@@ -220,15 +172,13 @@ jobs:
     needs: [build-backend, build-frontend]
     permissions:
       contents: read
-      packages: write   # imagetools create 需要写入 GHCR
+      packages: write
 
     steps:
       - name: 确定版本标签
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           else
             echo "tag=latest" >> $GITHUB_OUTPUT
@@ -251,7 +201,6 @@ jobs:
           username: ${{ secrets.HARBOR_USER }}
           password: ${{ secrets.HARBOR_PASSWORD }}
 
-      # 将 amd64 + arm64 两个单架构 tag 合并为一个多架构 Manifest
       - name: 合并后端多架构 Manifest
         run: |
           TAG="${{ steps.version.outputs.tag }}"
@@ -277,7 +226,6 @@ jobs:
               ${HARBOR_BACKEND}:${TAG}-amd64 \
               ${HARBOR_BACKEND}:${TAG}-arm64
           fi
-          echo "后端多架构 Manifest 已推送（GHCR + Harbor）"
 
       - name: 合并前端多架构 Manifest
         run: |
@@ -304,135 +252,3 @@ jobs:
               ${HARBOR_FRONTEND}:${TAG}-amd64 \
               ${HARBOR_FRONTEND}:${TAG}-arm64
           fi
-          echo "前端多架构 Manifest 已推送（GHCR + Harbor）"
-
-  # ──────────────────────────────────────────────────────────
-  # Job 4: 打包离线部署包并创建 GitHub Release
-  # ──────────────────────────────────────────────────────────
-  create-release:
-    name: 创建 GitHub Release
-    runs-on: ubuntu-latest
-    needs: [merge-manifests]
-    # 仅在打 tag（v*.*.*）或手动触发时创建 Release，分支 push 跳过
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-    permissions:
-      contents: write   # 创建 GitHub Release 必须
-      packages: read
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: 确定版本标签
-        id: version
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
-          else
-            echo "tag=${{ github.ref_name }}"         >> $GITHUB_OUTPUT
-          fi
-
-      # 下载所有架构的离线镜像包（明确指定 pattern，避免下载 Docker GHA 构建缓存）
-      - name: 下载后端 amd64 Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: backend-amd64
-          path: artifacts/
-
-      - name: 下载后端 arm64 Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: backend-arm64
-          path: artifacts/
-
-      - name: 下载前端 amd64 Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend-amd64
-          path: artifacts/
-
-      - name: 下载前端 arm64 Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend-arm64
-          path: artifacts/
-
-      - name: 整理文件
-        run: |
-          mkdir -p release-files
-          # 将所有 tar.gz 移到同一目录
-          find artifacts/ -name "*.tar.gz" -exec mv {} release-files/ \;
-          # 复制 docker-compose 和启动脚本
-          cp docker-compose.yml   release-files/
-          cp scripts/load-and-start.sh release-files/
-          chmod +x release-files/load-and-start.sh
-          ls -lh release-files/
-
-      # 打包完整离线部署包（4个镜像 + compose + 脚本）
-      - name: 打包 offline-deploy.tar.gz
-        run: |
-          cd release-files
-          tar -czf ../offline-deploy.tar.gz \
-            traceiot-backend-amd64.tar.gz \
-            traceiot-backend-arm64.tar.gz \
-            traceiot-frontend-amd64.tar.gz \
-            traceiot-frontend-arm64.tar.gz \
-            docker-compose.yml \
-            load-and-start.sh
-          echo "离线包大小: $(du -sh ../offline-deploy.tar.gz | cut -f1)"
-
-      # 生成 Release 说明
-      - name: 生成 Release Notes
-        id: notes
-        run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          cat > release-notes.md << EOF
-          ## TraceIoT ${TAG}
-
-          ### 镜像信息
-          | 镜像 | GHCR 地址 |
-          |------|-----------|
-          | 后端 | \`ghcr.io/${{ github.repository_owner }}/traceiot-backend:${TAG}\` |
-          | 前端 | \`ghcr.io/${{ github.repository_owner }}/traceiot-frontend:${TAG}\` |
-
-          支持架构：**linux/amd64**（x86 服务器）、**linux/arm64**（ARM 服务器/树莓派）
-
-          ### 在线部署（推荐）
-          \`\`\`bash
-          TAG=${TAG} docker compose up -d
-          \`\`\`
-
-          ### 离线部署
-          1. 下载 \`offline-deploy.tar.gz\` 并解压到服务器
-          2. 执行：\`bash load-and-start.sh\`
-          3. 脚本自动检测 CPU 架构（amd64 / arm64）加载对应镜像
-
-          ### 单架构离线包
-          - \`traceiot-backend-amd64.tar.gz\` — 后端镜像（x86）
-          - \`traceiot-backend-arm64.tar.gz\` — 后端镜像（ARM）
-          - \`traceiot-frontend-amd64.tar.gz\` — 前端镜像（x86）
-          - \`traceiot-frontend-arm64.tar.gz\` — 前端镜像（ARM）
-
-          ### 默认账号
-          | 服务 | 地址 | 账号密码 |
-          |------|------|---------|
-          | 前端 Web | http://your-ip | admin / Admin@123456 |
-          | EMQX Dashboard | http://your-ip:18083 | admin / public |
-          | InfluxDB | http://your-ip:8086 | admin / traceiot123 |
-          EOF
-
-      - name: 创建 GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: TraceIoT ${{ steps.version.outputs.tag }}
-          body_path: release-notes.md
-          draft: false
-          prerelease: ${{ contains(steps.version.outputs.tag, '-') }}
-          files: |
-            offline-deploy.tar.gz
-            release-files/traceiot-backend-amd64.tar.gz
-            release-files/traceiot-backend-arm64.tar.gz
-            release-files/traceiot-frontend-amd64.tar.gz
-            release-files/traceiot-frontend-arm64.tar.gz
-            release-files/docker-compose.yml
