@@ -76,15 +76,16 @@ jobs:
             sudo mkdir -p /opt/traceiot
             sudo chown -R $USER:$USER /opt/traceiot
 
-      # ── 上传 docker-compose.yml ──────────────────────────────────
-      - name: 上传 docker-compose.yml
+      # ── 上传 docker-compose.yml（暂存 /tmp，SSH 脚本按情况决定是否启用）──
+      # ssl.yml 运行后服务器上已有 HTTPS 模式的 docker-compose.yml，不能直接覆盖
+      - name: 上传 docker-compose.yml（暂存 /tmp）
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
           source: "docker-compose.yml"
-          target: /opt/traceiot
+          target: /tmp/
 
       # ── 上传镜像包到服务器 /tmp/（仅有 Artifact 时执行）────────
       - name: 上传镜像包到服务器
@@ -118,6 +119,19 @@ jobs:
             ok()   { echo "[$(date '+%H:%M:%S')] ✓ $*"; }
             info() { echo "[$(date '+%H:%M:%S')] → $*"; }
 
+            # ── 0. 配置腾讯云 Docker 镜像加速（只需一次，后续跳过）──
+            if ! grep -q 'mirror.ccs.tencentyun.com' /etc/docker/daemon.json 2>/dev/null; then
+              info "配置腾讯云 Docker 镜像加速..."
+              sudo mkdir -p /etc/docker
+              printf '{\n  "registry-mirrors": ["https://mirror.ccs.tencentyun.com"]\n}\n' \
+                | sudo tee /etc/docker/daemon.json > /dev/null
+              sudo systemctl reload docker 2>/dev/null || sudo systemctl restart docker 2>/dev/null || true
+              sleep 3
+              ok "镜像加速已配置（后续 docker pull 走腾讯云内网）"
+            else
+              ok "Docker 镜像加速已配置，跳过"
+            fi
+
             # ── 1. 检查 / 安装 Docker ─────────────────────────────
             if ! command -v docker &>/dev/null; then
               log "正在安装 Docker..."
@@ -142,8 +156,18 @@ jobs:
             ok "Docker Compose: $COMPOSE_CMD"
 
             # ── 3. 写入 .env（docker compose 自动读取）────────────
-            COMPOSE_FILE="/opt/traceiot/docker-compose.yml"
             printf 'GITHUB_REPOSITORY_OWNER=%s\nTAG=latest\n' "$REPO_OWNER" > /opt/traceiot/.env
+
+            # ── 3.5 选择 docker-compose.yml（防止覆盖 ssl.yml 的 HTTPS 配置）──
+            # ssl.yml 运行后 nginx-proxy 占用 80 端口，服务器上的 docker-compose.yml
+            # 已把 frontend 改为 expose 模式；若此时用仓库版（ports:80）会导致端口冲突。
+            COMPOSE_FILE="/opt/traceiot/docker-compose.yml"
+            if sudo docker ps --filter "name=^nginx-proxy$" --format '{{.Names}}' | grep -q nginx-proxy; then
+              info "检测到 nginx-proxy（HTTPS 已配置），保留服务器现有 docker-compose.yml"
+            else
+              info "未检测到 nginx-proxy（首次部署或 HTTP 模式），使用仓库版 docker-compose.yml"
+              cp /tmp/docker-compose.yml "$COMPOSE_FILE"
+            fi
 
             # ── 4. 加载应用镜像 ───────────────────────────────────
             if [ "$HAS_ARTIFACTS" = "true" ]; then
@@ -172,21 +196,27 @@ jobs:
             fi
 
             # ── 5. 基础设施镜像（本地已有则跳过，否则带重试拉取）─
-            for svc in postgres redis influxdb emqx; do
-              IMG=$(sudo docker compose -f "$COMPOSE_FILE" config 2>/dev/null \
-                | grep -A1 "  $svc:" | grep "image:" | awk '{print $2}' || true)
-              if [ -n "$IMG" ] && sudo docker image inspect "$IMG" &>/dev/null 2>&1; then
-                ok "已缓存，跳过: $IMG"
+            # 用精确镜像名检测缓存，避免 docker compose config grep 解析不稳定的问题
+            pull_if_missing() {
+              local img="$1"
+              if sudo docker image inspect "$img" &>/dev/null 2>&1; then
+                ok "已缓存，跳过: $img"
               else
-                log "拉取基础设施镜像: $svc ..."
+                log "拉取镜像: $img ..."
                 for i in 1 2 3; do
-                  $COMPOSE_CMD -f "$COMPOSE_FILE" pull "$svc" && break || {
+                  sudo docker pull "$img" && { ok "$img 拉取完成"; return 0; } || {
                     log "第 $i 次失败，10s 后重试..."
                     sleep 10
                   }
                 done
+                log "⚠ $img 拉取失败，将由 compose up 兜底处理"
               fi
-            done
+            }
+
+            pull_if_missing "postgres:16"
+            pull_if_missing "redis:7-alpine"
+            pull_if_missing "influxdb:2.7"
+            pull_if_missing "emqx:5.8"
 
             # ── 6. 启动 / 更新服务 ────────────────────────────────
             RUNNING_COUNT=$(sudo docker ps --filter "name=traceiot" --format "{{.Names}}" 2>/dev/null | wc -l)
