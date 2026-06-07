@@ -24,15 +24,16 @@ public class AuthController : AbpControllerBase
     }
 
     [HttpPost("login")]
+    [IgnoreAntiforgeryToken]
     public async Task<IActionResult> Login([FromBody] LoginDto input)
     {
         var user = await _userManager.FindByNameAsync(input.UserName);
         if (user == null)
-            return Unauthorized(new { message = "鐢ㄦ埛鍚嶆垨瀵嗙爜閿欒" });
+            return Unauthorized(new { message = "用户名或密码错误" });
 
         var passwordValid = await _userManager.CheckPasswordAsync(user, input.Password);
         if (!passwordValid)
-            return Unauthorized(new { message = "鐢ㄦ埛鍚嶆垨瀵嗙爜閿欒" });
+            return Unauthorized(new { message = "用户名或密码错误" });
 
         var roles = await _userManager.GetRolesAsync(user);
 

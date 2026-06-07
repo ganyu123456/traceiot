@@ -3,19 +3,25 @@ using InfluxDB.Client;
 using InfluxDB.Client.Api.Domain;
 using InfluxDB.Client.Writes;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
+using TraceIot.Devices;
 using TraceIot.Realtime;
+using Volo.Abp.Domain.Repositories;
+using Volo.Abp.Uow;
 
 namespace TraceIot.MqttWorker;
 
 /// <summary>
-/// å¤„ç†æ”¶åˆ°çš„ GPS MQTT æ¶ˆæ¯ï¼šè§£æ â†’ å†™ Redis â†’ å†™ InfluxDB
+/// ´¦ÀíÊÕµ½µÄ GPS MQTT ÏûÏ¢£º½âÎö ¡ú Ğ´ Redis ¡ú Ğ´ InfluxDB ¡ú Í¬²½ PostgreSQL Éè±¸×´Ì¬
+/// ÈôÊÕµ½Î´Öª deviceId Ôò×Ô¶¯×¢²áÉè±¸
 /// </summary>
 public class GpsMessageHandler
 {
     private readonly IConnectionMultiplexer _redis;
     private readonly IInfluxDBClient        _influx;
+    private readonly IServiceScopeFactory   _scopeFactory;
     private readonly ILogger<GpsMessageHandler> _logger;
     private readonly string _org;
     private readonly string _bucket;
@@ -25,14 +31,16 @@ public class GpsMessageHandler
     public GpsMessageHandler(
         IConnectionMultiplexer redis,
         IInfluxDBClient influx,
+        IServiceScopeFactory scopeFactory,
         IConfiguration config,
         ILogger<GpsMessageHandler> logger)
     {
-        _redis  = redis;
-        _influx = influx;
-        _logger = logger;
-        _org    = config["InfluxDB:Org"]    ?? "traceiot";
-        _bucket = config["InfluxDB:Bucket"] ?? "gps";
+        _redis        = redis;
+        _influx       = influx;
+        _scopeFactory = scopeFactory;
+        _logger       = logger;
+        _org          = config["InfluxDB:Org"]    ?? "traceiot";
+        _bucket       = config["InfluxDB:Bucket"] ?? "gps";
     }
 
     public async Task HandleLocationAsync(string topic, string payload)
@@ -42,21 +50,27 @@ public class GpsMessageHandler
             var data = JsonSerializer.Deserialize<GpsLocationPayload>(payload, _jsonOpts);
             if (data == null || string.IsNullOrWhiteSpace(data.DeviceId))
             {
-                _logger.LogWarning("æ”¶åˆ°æ— æ•ˆ GPS Payloadï¼ŒTopic: {Topic}", topic);
+                _logger.LogWarning("ÊÕµ½ÎŞĞ§ GPS Payload£¬Topic: {Topic}, Payload: {Payload}", topic, payload);
                 return;
             }
 
-            _logger.LogDebug("è®¾å¤‡ {DeviceId} ä½ç½®æ›´æ–°: lat={Lat}, lng={Lng}, speed={Speed}",
-                data.DeviceId, data.Lat, data.Lng, data.Speed);
+            // timestamp=0 Ê±Ê¹ÓÃ·şÎñÆ÷µ±Ç°Ê±¼ä£¨STM32 ÎŞÍøÂçÊ±ÖÓÍ¬²½Ê±µÄ¶µµ×£©
+            if (data.Timestamp <= 0)
+                data.Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+            _logger.LogInformation("Éè±¸ {DeviceId} Î»ÖÃ¸üĞÂ: lat={Lat}, lng={Lng}", data.DeviceId, data.Lat, data.Lng);
 
             await Task.WhenAll(
                 WriteRedisAsync(data),
                 WriteInfluxAsync(data)
             );
+
+            // Òì²½Í¬²½ PostgreSQL£¨²»×èÈûÖ÷Á÷³Ì£©
+            _ = Task.Run(() => SyncDeviceAsync(data));
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "å¤„ç† GPS æ¶ˆæ¯å¼‚å¸¸ï¼ŒTopic: {Topic}", topic);
+            _logger.LogError(ex, "´¦Àí GPS ÏûÏ¢Òì³££¬Topic: {Topic}", topic);
         }
     }
 
@@ -68,11 +82,11 @@ public class GpsMessageHandler
             var heartbeatKey = $"{TraceIotConsts.RedisHeartbeatKeyPrefix}{deviceId}";
             await db.StringSetAsync(heartbeatKey, "1",
                 TimeSpan.FromSeconds(TraceIotConsts.DeviceOfflineTimeoutSeconds));
-            _logger.LogDebug("è®¾å¤‡ {DeviceId} å¿ƒè·³ç»­çº¦", deviceId);
+            _logger.LogDebug("Éè±¸ {DeviceId} ĞÄÌøĞøÆÚ", deviceId);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "å¤„ç†å¿ƒè·³å¼‚å¸¸ï¼ŒDeviceId: {DeviceId}", deviceId);
+            _logger.LogError(ex, "´¦ÀíĞÄÌøÒì³££¬DeviceId: {DeviceId}", deviceId);
         }
     }
 
@@ -98,25 +112,68 @@ public class GpsMessageHandler
         await db.StringSetAsync(realKey, json);
         await db.StringSetAsync(heartbeatKey, "1",
             TimeSpan.FromSeconds(TraceIotConsts.DeviceOfflineTimeoutSeconds));
-
-        // åŠ å…¥åœ¨çº¿é›†åˆ
         await db.SetAddAsync(TraceIotConsts.RedisOnlineSetKey, data.DeviceId);
     }
 
     private async Task WriteInfluxAsync(GpsLocationPayload data)
     {
-        var writeApi = _influx.GetWriteApiAsync();
+        try
+        {
+            var writeApi = _influx.GetWriteApiAsync();
+            var ts = DateTimeOffset.FromUnixTimeMilliseconds(data.Timestamp).UtcDateTime;
 
-        var point = PointData
-            .Measurement(TraceIotConsts.InfluxMeasurement)
-            .Tag("device_id", data.DeviceId)
-            .Field("lat",       data.Lat)
-            .Field("lng",       data.Lng)
-            .Field("speed",     data.Speed)
-            .Field("direction", data.Direction)
-            .Timestamp(DateTimeOffset.FromUnixTimeMilliseconds(data.Timestamp).UtcDateTime,
-                       WritePrecision.Ms);
+            var point = PointData
+                .Measurement(TraceIotConsts.InfluxMeasurement)
+                .Tag("device_id", data.DeviceId)
+                .Field("lat",       data.Lat)
+                .Field("lng",       data.Lng)
+                .Field("speed",     data.Speed)
+                .Field("direction", data.Direction)
+                .Timestamp(ts, WritePrecision.Ms);
 
-        await writeApi.WritePointAsync(point, _bucket, _org);
+            await writeApi.WritePointAsync(point, _bucket, _org);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Ğ´Èë InfluxDB Ê§°Ü£¨Éè±¸ {DeviceId}£©£¬ÊµÊ±¹¦ÄÜ²»ÊÜÓ°Ïì", data.DeviceId);
+        }
+    }
+
+    /// <summary>
+    /// Í¬²½Éè±¸×´Ì¬µ½ PostgreSQL£º
+    /// - ÈôÉè±¸²»´æÔÚÔò×Ô¶¯×¢²á£¨ÒÔ deviceId ×÷Îª DeviceCode ºÍ DeviceName£©
+    /// - ¸üĞÂ×îĞÂÎ»ÖÃºÍÔÚÏß×´Ì¬
+    /// </summary>
+    private async Task SyncDeviceAsync(GpsLocationPayload data)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var unitOfWorkManager = scope.ServiceProvider.GetRequiredService<IUnitOfWorkManager>();
+            var deviceRepo        = scope.ServiceProvider.GetRequiredService<IDeviceRepository>();
+
+            using var uow = unitOfWorkManager.Begin(requiresNew: true);
+
+            var device = await deviceRepo.FindByCodeAsync(data.DeviceId);
+            if (device == null)
+            {
+                _logger.LogInformation("×Ô¶¯×¢²áĞÂÉè±¸: {DeviceId}", data.DeviceId);
+                device = new Device(Guid.NewGuid(), data.DeviceId, $"Éè±¸-{data.DeviceId}");
+                await deviceRepo.InsertAsync(device);
+            }
+
+            device.UpdateHeartbeat(
+                (decimal)data.Lat,
+                (decimal)data.Lng,
+                (decimal)data.Speed,
+                (decimal)data.Direction);
+
+            await deviceRepo.UpdateAsync(device);
+            await uow.CompleteAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Í¬²½Éè±¸µ½ PostgreSQL Ê§°Ü£¨DeviceId: {DeviceId}£©£¬²»Ó°ÏìÊµÊ±¹¦ÄÜ", data.DeviceId);
+        }
     }
 }

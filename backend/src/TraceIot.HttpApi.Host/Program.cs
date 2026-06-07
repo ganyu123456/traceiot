@@ -29,6 +29,9 @@ try
     var app = builder.Build();
 
     // 自动执行 EF Core Migration
+    var actualConnStr = app.Configuration.GetConnectionString("Default");
+    Console.WriteLine($"[DEBUG] Connection string: {actualConnStr}");
+
     using (var scope = app.Services.CreateScope())
     {
         var db = scope.ServiceProvider.GetRequiredService<TraceIotDbContext>();

@@ -11,6 +11,41 @@ const { Title } = Typography
 const AMAP_KEY           = '57a5e349af4ba24b6e204e299d91c332'
 const AMAP_SECURITY_CODE = 'f8361b07700c70840d85b27ea0bbe6d5'
 
+// WGS84（GPS原始坐标）→ GCJ02（高德/火星坐标）转换
+// 高德地图使用 GCJ02，GPS 模块输出 WGS84，不转换会有 ~200-500m 偏差
+const GCJ_A  = 6378245.0
+const GCJ_EE = 0.00669342162296594323
+
+function outOfChina(lng: number, lat: number) {
+  return lng < 72.004 || lng > 137.8347 || lat < 0.8293 || lat > 55.8271
+}
+function transformLat(x: number, y: number) {
+  let r = -100 + 2*x + 3*y + 0.2*y*y + 0.1*x*y + 0.2*Math.sqrt(Math.abs(x))
+  r += (20*Math.sin(6*x*Math.PI) + 20*Math.sin(2*x*Math.PI)) * 2/3
+  r += (20*Math.sin(y*Math.PI)   + 40*Math.sin(y/3*Math.PI)) * 2/3
+  r += (160*Math.sin(y/12*Math.PI) + 320*Math.sin(y*Math.PI/30)) * 2/3
+  return r
+}
+function transformLng(x: number, y: number) {
+  let r = 300 + x + 2*y + 0.1*x*x + 0.1*x*y + 0.1*Math.sqrt(Math.abs(x))
+  r += (20*Math.sin(6*x*Math.PI) + 20*Math.sin(2*x*Math.PI)) * 2/3
+  r += (20*Math.sin(x*Math.PI)   + 40*Math.sin(x/3*Math.PI)) * 2/3
+  r += (150*Math.sin(x/12*Math.PI) + 300*Math.sin(x/30*Math.PI)) * 2/3
+  return r
+}
+function wgs84ToGcj02(lng: number, lat: number): [number, number] {
+  if (outOfChina(lng, lat)) return [lng, lat]
+  let dLat = transformLat(lng - 105, lat - 35)
+  let dLng = transformLng(lng - 105, lat - 35)
+  const radLat  = lat / 180 * Math.PI
+  let   magic   = Math.sin(radLat)
+  magic = 1 - GCJ_EE * magic * magic
+  const sqrtM   = Math.sqrt(magic)
+  dLat = dLat * 180 / ((GCJ_A * (1 - GCJ_EE)) / (magic * sqrtM) * Math.PI)
+  dLng = dLng * 180 / (GCJ_A / sqrtM * Math.cos(radLat) * Math.PI)
+  return [lng + dLng, lat + dLat]
+}
+
 declare global {
   interface Window {
     AMap: any
@@ -35,6 +70,7 @@ export default function RealtimeMap() {
   const mapRef       = useRef<HTMLDivElement>(null)
   const mapInstance  = useRef<any>(null)
   const markersRef   = useRef<Record<string, any>>({})
+  const fitViewDone  = useRef(false)   // 只在首次有标注时自动定位，之后不干扰用户缩放
   const [positions, setPositions] = useState<DevicePosition[]>([])
   const [stats, setStats]         = useState<DashboardStats | null>(null)
   const [mapReady, setMapReady]   = useState(false)
@@ -62,31 +98,30 @@ export default function RealtimeMap() {
   const updateMarkers = useCallback((data: DevicePosition[]) => {
     if (!mapInstance.current) return
     const AMap = window.AMap
+    const validData = data.filter(p => p.lat !== 0 || p.lng !== 0)
 
-    data.forEach(pos => {
-      const lnglat = [pos.lng, pos.lat]
+    validData.forEach(pos => {
+      // WGS84 → GCJ02，消除高德地图坐标偏差
+      const [gcjLng, gcjLat] = wgs84ToGcj02(pos.lng, pos.lat)
+      const lnglat = [gcjLng, gcjLat]
       const title  = `${pos.deviceName}\n速度: ${pos.speed.toFixed(1)} km/h`
 
+      const color    = pos.online ? '#1677ff' : '#8c8c8c'
+      // 固定 20×20 圆点，offset(-10,-10) 使圆心精确落在坐标点，避免 CSS transform 被 AMap 容器裁剪
+      const dotHTML  = `<div style="width:20px;height:20px;border-radius:50%;background:${color};border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.45);cursor:pointer"></div>`
+      const labelHTML = `<div style="background:${color};color:#fff;padding:3px 10px;border-radius:10px;font-size:12px;font-weight:600;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,0.3)">${pos.deviceName}</div>`
+
       if (markersRef.current[pos.deviceCode]) {
-        // 更新已有标注位置
         markersRef.current[pos.deviceCode].setPosition(lnglat)
-        markersRef.current[pos.deviceCode].setTitle(title)
+        markersRef.current[pos.deviceCode].setContent(dotHTML)
+        markersRef.current[pos.deviceCode].setLabel({ content: labelHTML, direction: 'top' })
       } else {
-        // 创建新标注
         const marker = new AMap.Marker({
+          map: mapInstance.current,   // 直接在构造时挂载，比 setMap() 更可靠
           position: lnglat,
-          title,
-          icon: new AMap.Icon({
-            size: new AMap.Size(32, 32),
-            image: pos.online
-              ? 'https://a.amap.com/jsapi_demos/static/demo-center/icons/poi-marker-1.png'
-              : 'https://a.amap.com/jsapi_demos/static/demo-center/icons/poi-marker-red.png',
-            imageSize: new AMap.Size(32, 32),
-          }),
-          label: {
-            content: `<div style="background:#fff;padding:2px 6px;border-radius:4px;font-size:12px;border:1px solid #ddd">${pos.deviceName}</div>`,
-            offset: new AMap.Pixel(-20, -40),
-          }
+          content: dotHTML,
+          offset: new AMap.Pixel(-10, -10),  // 圆点居中
+          label: { content: labelHTML, direction: 'top' },
         })
         marker.on('click', () => {
           const info = new AMap.InfoWindow({
@@ -100,14 +135,21 @@ export default function RealtimeMap() {
                 时间：${dayjs(pos.timestamp).format('HH:mm:ss')}
               </div>
             `,
-            offset: new AMap.Pixel(0, -40),
+            anchor: 'bottom-center',
+            offset: new AMap.Pixel(0, -14),
           })
           info.open(mapInstance.current, marker.getPosition())
         })
-        marker.setMap(mapInstance.current)
         markersRef.current[pos.deviceCode] = marker
       }
     })
+
+    // 首次有设备数据时定位到第一个设备；之后不干扰用户的缩放/平移
+    if (!fitViewDone.current && validData.length > 0) {
+      fitViewDone.current = true
+      const [lng0, lat0] = wgs84ToGcj02(validData[0].lng, validData[0].lat)
+      mapInstance.current.setZoomAndCenter(14, [lng0, lat0])
+    }
   }, [])
 
   const fetchData = useCallback(async () => {
