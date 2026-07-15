@@ -6,7 +6,6 @@ on:
   workflow_run:
     workflows: ["Release — 多架构镜像构建与发布"]
     types: [completed]
-    branches: [main, develop]
   workflow_dispatch:
 
 permissions:
